@@ -931,8 +931,9 @@ def configure_operations(_attempt=0) -> bool:
         or ""
     ).strip()
     if not url:
-        if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"):
-            raise RuntimeError("Banco persistente não configurado. O serviço não pode usar SQLite temporário em produção.")
+        # Render Free does not provide a persistent database by default.  Keep
+        # the existing SQLite store available for this deployment mode; when a
+        # DATABASE_URL is supplied we transparently use PostgreSQL instead.
         return False
     if not url.startswith(("postgresql://", "postgres://")):
         raise RuntimeError("DATABASE_URL deve apontar para PostgreSQL; fallback local desabilitado.")
