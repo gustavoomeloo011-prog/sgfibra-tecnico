@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "worker:check": "wrangler deploy --dry-run",
+    "worker:deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.114.0"
+  }
+}

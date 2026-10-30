@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ebf-tecnico-gateway",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-07-24",
+  "workers_dev": true,
+  "vars": {
+    "PRIMARY_ORIGIN": "https://undergrad-confirm-petal.ngrok-free.dev",
+    "FALLBACK_ORIGIN": "https://ebf-tecnico.onrender.com",
+    "PRIMARY_TIMEOUT_MS": "1800",
+    "FALLBACK_TIMEOUT_MS": "70000",
+    "SYSTEM_DISABLED": "0"
+  }
+}

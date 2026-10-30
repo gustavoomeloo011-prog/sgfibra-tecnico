@@ -1,0 +1,9 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VOIP teste local</title>
+<link rel="stylesheet" href="../static/essential.css"><link rel="stylesheet" href="../static/voip.css"><div id="content"></div>
+<script>
+const state={user:{mode:'superadmin'}};
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function setPage(){}
+async function api(path){if(path.endsWith('/password'))return {password:'SENHA-FICTICIA'};return {updated_at:1792051200,items:[{number:'1100000001',ips:[],status:'available',active:true,observation:'VAGO'},{number:'1100000002',ips:['192.0.2.1:5060'],status:'in_use',active:true,observation:'Contrato fictício 100'},{number:'1100000003',ips:[],status:'review',active:true,observation:'Reservado'}]};}
+location.hash='voip';
+</script><script src="../static/voip.js"></script><script>voipView();</script></html>

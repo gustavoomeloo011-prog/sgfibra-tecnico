@@ -1,0 +1,18 @@
+<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Teste local de certificação</title>
+<link rel="stylesheet" href="../static/essential.css"><link rel="stylesheet" href="../static/certification.css">
+<button onclick="certificationDialog(12)">Abrir certificação de teste</button><output id="result">Nenhum envio</output>
+<script>
+const state={user:{usuario:'Supervisor de teste'}};
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const number=value=>new Intl.NumberFormat('pt-BR').format(value);
+async function api(path,options={}){
+ if(options.method==='POST'){
+  const body=JSON.parse(options.body);
+  if(!body.confirmed || body.client_id!==34)throw Error('Confirmação inválida');
+  document.querySelector('#result').textContent='Envio simulado confirmado: '+body.kind;
+  return {confirmed:true,notes_url:'#simulado'};
+ }
+ if(path.endsWith('/signals'))return {readings:{rx:{value:-22,median:-22,peers:9,delta:0,level:'good'},tx:{value:-26,median:-22,peers:9,delta:-4,level:'bad'}},checked_at:'14/10/2026 14:00',notice:'Dados fictícios para teste. Nenhuma informação enviada ao SGP.'};
+ return {client_id:34,client:'Cliente de demonstração',reason:'Instalação de kit',technician:'Técnico de teste',duration:{minutes:90},photos:[],notes_url:'#simulado',gallery_url:'#galeria',technician_notes:'Instalação concluída.'};
+}
+</script><script src="../static/certification.js"></script></html>

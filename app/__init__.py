@@ -1,0 +1,2 @@
+"""EBF Técnico backend."""
+
