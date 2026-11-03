@@ -13,6 +13,7 @@ import secrets
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import date, datetime, time as clock_time, timedelta
@@ -1315,7 +1316,7 @@ async def technician_order_tracking(order_id: int, request: Request, context=Dep
         session = await run_sync(lambda: postgres_operations.tracking_session(token_hash)) or session
     tracking_url = session.get("tracking_url")
     if not tracking_url and session.get("ready_token"):
-        tracking_url = str(request.base_url).rstrip("/") + f"/acompanhar/{session['ready_token']}"
+        tracking_url = _public_app_base_url(request) + f"/acompanhar/{session['ready_token']}"
     if not session.get("titular_cpf_hash"):
         tracking_url = None
     return {"state": session.get("state"), "order_id": order_id, "os_status": session.get("os_status"),
@@ -1375,7 +1376,7 @@ async def technician_start_order_tracking(order_id: int, request: Request, conte
     token = str(session.pop("ready_token", ""))
     if not token:
         raise HTTPException(409, "O link desta visita já foi criado e não pode ser regenerado.")
-    session["tracking_url"] = str(request.base_url).rstrip("/") + f"/acompanhar/{token}"
+    session["tracking_url"] = _public_app_base_url(request) + f"/acompanhar/{token}"
     session.pop("token", None)
     await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
     return {"state": "traveling", "tracking_url": session["tracking_url"] if session.get("titular_cpf_hash") else None,
@@ -4248,6 +4249,23 @@ def _tracking_device_id(request: Request) -> str:
     return device_id
 
 
+def _public_app_base_url(request: Request) -> str:
+    configured = str(os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_PUBLIC_URL") or "").strip().rstrip("/")
+    if configured:
+        parsed = urlparse(configured)
+        if parsed.scheme in ("http", "https") and parsed.netloc and not parsed.username and not parsed.password:
+            return configured
+    forwarded_host = str(request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+    raw_host = forwarded_host or request.url.netloc
+    if not re.fullmatch(r"[A-Za-z0-9.-]+(?::\d{1,5})?", raw_host):
+        raw_host = request.url.netloc
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    scheme = "https" if forwarded_proto == "https" or raw_host.lower().endswith(".onrender.com") else request.url.scheme
+    if scheme not in ("http", "https"):
+        scheme = "https"
+    return f"{scheme}://{raw_host}"
+
+
 def _tracking_device_cache_key(session: dict[str, Any], device_id: str) -> str:
     device_hash = _tracking_digest("device", device_id)
     return f"tracking-device-verified-v1:{session['token_hash']}:{device_hash}"
@@ -4314,7 +4332,10 @@ async def _tracking_for_technician(order_id: int, context) -> dict[str, Any]:
     return session
 
 
-async def _prepare_order_tracking(order_id: int, context, *, require_titular_cpf: bool = False) -> dict[str, Any]:
+async def _prepare_order_tracking(
+    order_id: int, context, *, require_titular_cpf: bool = False,
+    manual_titular_cpf: str | None = None,
+) -> dict[str, Any]:
     order = await run_sync(lambda: _tracking_order_from_sgp(context[2], order_id))
     mode = context[1].get("user", {}).get("mode")
     is_supervisor = mode == "superadmin"
@@ -4330,13 +4351,15 @@ async def _prepare_order_tracking(order_id: int, context, *, require_titular_cpf
     existing = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
     titular_cpf_hash = str((existing or {}).get("titular_cpf_hash") or "")
     if not titular_cpf_hash:
-        try:
-            titular_cpf = await run_sync(lambda: _titular_cpf_from_sgp(context[2], order))
-        except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "Titular identity lookup failed for OS %s (%s)", order_id, type(exc).__name__,
-            )
-            titular_cpf = None
+        titular_cpf = manual_titular_cpf
+        if not titular_cpf:
+            try:
+                titular_cpf = await run_sync(lambda: _titular_cpf_from_sgp(context[2], order))
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "Titular identity lookup failed for OS %s (%s)", order_id, type(exc).__name__,
+                )
+                titular_cpf = None
         if titular_cpf:
             try:
                 titular_cpf_hash = _tracking_digest("titular-cpf", titular_cpf)
@@ -4446,15 +4469,26 @@ async def technician_live_location(request: Request, context=Depends(session_con
 @app.post("/api/office/orders/{order_id}/tracking-link")
 async def create_tracking_link(order_id: int, request: Request, context=Depends(session_context)):
     require_superadmin_session(context[1])
-    session = await _prepare_order_tracking(order_id, context, require_titular_cpf=True)
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    supplied_cpf = body.get("cpf") if isinstance(body, dict) else None
+    manual_cpf = _valid_cpf(supplied_cpf) if supplied_cpf else None
+    if supplied_cpf and not manual_cpf:
+        raise HTTPException(400, "Informe um CPF válido, com os 11 números do titular.")
+    session = await _prepare_order_tracking(
+        order_id, context, require_titular_cpf=True, manual_titular_cpf=manual_cpf,
+    )
     if session.get("state") in ("arrived", "finished", "paused", "cancelled"):
         raise HTTPException(409, "O acompanhamento desta visita já foi encerrado.")
     url = session.get("tracking_url")
     if not url and session.get("ready_token"):
-        url = str(request.base_url).rstrip("/") + f"/acompanhar/{session['ready_token']}"
+        url = _public_app_base_url(request) + f"/acompanhar/{session['ready_token']}"
     if not url:
         raise HTTPException(409, "Não foi possível obter o link desta visita.")
-    return {"url": url, "expires_at": session.get("expires_at"), "state": session.get("state")}
+    return {"url": url, "expires_at": session.get("expires_at"), "state": session.get("state"),
+            "identity_source": "supervisor" if manual_cpf else "sgp"}
 
 
 @app.get("/acompanhar/{token}", include_in_schema=False)
