@@ -590,8 +590,18 @@ async def healthz():
         "background_sync": False,
         "render_keepalive": bool(keepalive_url()),
         "database": "postgresql" if postgres_operations.POSTGRES_ACTIVE else "sqlite-fallback",
+        "persistent_user_storage": postgres_operations.POSTGRES_ACTIVE,
+        "storage_notice": None if postgres_operations.POSTGRES_ACTIVE else "Configure DATABASE_URL com PostgreSQL persistente no Render para manter perfis entre deploys.",
         "valkey": bool(store.redis),
     }
+
+
+def require_persistent_user_storage() -> None:
+    if os.getenv("RENDER") and not postgres_operations.POSTGRES_ACTIVE:
+        raise HTTPException(
+            503,
+            "A criação de perfis está temporariamente bloqueada: configure DATABASE_URL com PostgreSQL persistente no Render.",
+        )
 
 
 @app.post("/api/integrations/google-sheets")
@@ -1293,7 +1303,7 @@ async def technician_order_status(order_id: int, request: Request, context=Depen
 
 
 @app.get("/api/technician/orders/{order_id}/tracking")
-async def technician_order_tracking(order_id: int, context=Depends(session_context)):
+async def technician_order_tracking(order_id: int, request: Request, context=Depends(session_context)):
     require_technician(context[1])
     session = await _tracking_for_technician(order_id, context)
     token = session.get("token")
@@ -1303,9 +1313,14 @@ async def technician_order_tracking(order_id: int, context=Depends(session_conte
         index = await run_sync(lambda: postgres_operations.tracking_session(f"os-index-{order_id}"))
         token_hash = str((index or {}).get("token_hash") or "")
         session = await run_sync(lambda: postgres_operations.tracking_session(token_hash)) or session
-    return {"state": session.get("state"), "order_id": order_id,
+    tracking_url = session.get("tracking_url")
+    if not tracking_url and session.get("ready_token"):
+        tracking_url = str(request.base_url).rstrip("/") + f"/acompanhar/{session['ready_token']}"
+    if not session.get("titular_cpf_hash"):
+        tracking_url = None
+    return {"state": session.get("state"), "order_id": order_id, "os_status": session.get("os_status"),
             "token": session.get("ready_token") if session.get("state") == "ready" else None,
-            "tracking_url": session.get("tracking_url"), "last_location": session.get("last_location"),
+            "tracking_url": tracking_url, "last_location": session.get("last_location"),
             "messages": session.get("messages", []), "unread_technician": session.get("unread_technician", 0),
             "expires_at": session.get("expires_at")}
 
@@ -1363,7 +1378,8 @@ async def technician_start_order_tracking(order_id: int, request: Request, conte
     session["tracking_url"] = str(request.base_url).rstrip("/") + f"/acompanhar/{token}"
     session.pop("token", None)
     await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
-    return {"state": "traveling", "tracking_url": session["tracking_url"], "expires_at": session["expires_at"]}
+    return {"state": "traveling", "tracking_url": session["tracking_url"] if session.get("titular_cpf_hash") else None,
+            "expires_at": session["expires_at"], "identity_required": not bool(session.get("titular_cpf_hash"))}
 
 
 @app.post("/api/technician/orders/{order_id}/tracking/location")
@@ -1398,26 +1414,61 @@ async def technician_order_arrived(order_id: int, context=Depends(session_contex
 
 
 @app.get("/api/public/tracking/{token}")
-async def public_order_tracking(token: str):
+async def public_order_tracking(token: str, request: Request):
     try:
         session = await _tracking_for_token(token)
     except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        session = None
-    if session is None:
-        return await _legacy_public_tracking_payload(token)
+        if exc.status_code == 404:
+            raise HTTPException(410, "Este link é antigo. Solicite um novo acompanhamento ao supervisor.") from exc
+        raise
+    try:
+        device_id = _tracking_device_id(request)
+        verified = await run_sync(lambda: cache_snapshot(_tracking_device_cache_key(session, device_id), None, 12 * 3600))
+    except HTTPException:
+        verified = None
+    if not verified:
+        return {"identity_required": True}
     if session.get("state") in ("cancelled", "finished", "paused"):
         raise HTTPException(410, "Este acompanhamento foi encerrado.")
     loc = session.get("last_location")
     fresh = session.get("state") == "traveling" and loc and time.time() - float(loc.get("updated_at") or 0) <= 90
     return {"client": session.get("client"), "technician": str(session.get("technician") or "Técnico").split()[0],
             "destination": session.get("destination"), "location": loc if fresh else None,
-            "status": "arrived" if session.get("state") == "arrived" else "on_the_way" if fresh else "location_unavailable",
+            "status": "arrived" if session.get("state") == "arrived" else "on_the_way" if fresh else "waiting_location" if session.get("state") == "ready" else "location_unavailable",
             "updated_at": loc.get("updated_at") if loc else None,
             "arrived_at": session.get("arrived_at"),
             "messages": session.get("messages", []), "chat_open": session.get("state") == "traveling",
             "unread_client": session.get("unread_client", 0)}
+
+
+@app.post("/api/public/tracking/{token}/verify")
+async def public_order_tracking_verify(token: str, request: Request):
+    session = await _tracking_for_token(token)
+    if session.get("state") in ("cancelled", "finished", "paused"):
+        raise HTTPException(410, "Este acompanhamento foi encerrado.")
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "Dados de confirmação inválidos.")
+    cpf = _valid_cpf(body.get("cpf"))
+    if not cpf:
+        raise HTTPException(400, "Digite um CPF válido, com os 11 números do titular.")
+    device_id = _tracking_device_id(request)
+    token_hash = str(session.get("token_hash") or hashlib.sha256(token.encode()).hexdigest())
+    ip = _tracking_request_ip(request) or "unknown"
+    attempts_key = f"tracking-cpf-attempts-v1:{hashlib.sha256(f'{token_hash}:{ip}'.encode()).hexdigest()}"
+    attempts = await run_sync(lambda: cache_snapshot(attempts_key, None, 900)) or {}
+    if int(attempts.get("count") or 0) >= 5:
+        raise HTTPException(429, "Muitas tentativas. Peça ao supervisor para gerar um novo link.")
+    supplied_hash = _tracking_digest("titular-cpf", cpf)
+    expected_hash = str(session.get("titular_cpf_hash") or "")
+    if not expected_hash or not hmac.compare_digest(supplied_hash, expected_hash):
+        await run_sync(lambda: save_cache_snapshot(attempts_key, {"count": int(attempts.get("count") or 0) + 1}, 900))
+        raise HTTPException(403, "O CPF não corresponde ao titular desta instalação.")
+    device_key = _tracking_device_cache_key(session, device_id)
+    retention = max(60, min(12 * 3600, int(float(session.get("expires_at") or time.time()) - time.time())))
+    await run_sync(lambda: save_cache_snapshot(device_key, {"verified_at": time.time()}, retention))
+    await run_sync(lambda: delete_cache_snapshots_prefix(attempts_key))
+    return {"verified": True}
 
 
 @app.post("/api/public/tracking/{token}/messages")
@@ -1429,26 +1480,8 @@ async def public_order_tracking_message(token: str, request: Request):
         if exc.status_code != 404:
             raise
         raise HTTPException(410, "Chat indisponível para este link antigo.")
+    await _require_verified_tracking_device(session, request)
     return await _post_tracking_message(session, "Cliente", body.get("text"), "client", _tracking_request_ip(request))
-
-
-async def _legacy_public_tracking_payload(token: str):
-    if not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", token):
-        raise HTTPException(404, "Acompanhamento não encontrado.")
-    tracking = await run_sync(lambda: cache_snapshot(_tracking_key(token), retention_seconds=8 * 3600))
-    if not tracking or float(tracking.get("expires_at") or 0) <= time.time():
-        raise HTTPException(410, "Este acompanhamento expirou.")
-    active = await run_sync(lambda: cache_snapshot(_active_tracking_key(tracking["technician"]), retention_seconds=8 * 3600))
-    if not active or not hmac.compare_digest(str(active.get("token_hash") or ""), hashlib.sha256(token.encode()).hexdigest()):
-        raise HTTPException(410, "Este acompanhamento foi encerrado ou substituído por outro serviço.")
-    shift = await run_sync(lambda: cache_snapshot(_technician_shift_key(tracking["technician"]), retention_seconds=2 * 86400))
-    location = await run_sync(lambda: cache_snapshot(_live_location_key(tracking["technician"]), retention_seconds=12 * 3600))
-    fresh = bool(_shift_is_active(shift) and location and time.time() - float(location.get("updated_at") or 0) <= 180)
-    public_location = ({key: location.get(key) for key in ("latitude", "longitude", "accuracy", "updated_at")} if fresh else None)
-    return {"client": tracking["client"], "technician": tracking["technician"].split()[0],
-            "scheduled_at": tracking.get("scheduled_at"), "destination": tracking["destination"],
-            "location": public_location, "status": "on_the_way" if fresh else "waiting_location",
-            "expires_at": tracking["expires_at"], "messages": [], "chat_open": False}
 
 
 def _tracking_request_ip(request: Request) -> str | None:
@@ -3272,7 +3305,12 @@ async def superadmin_users(context=Depends(session_context)):
             for member in members
         )
         user["popup_enabled"] = any(_same_person(user.get("username"), member.get("username")) for member in popup_members)
-    return {"users": users}
+    return {
+        "users": users,
+        "persistent": postgres_operations.POSTGRES_ACTIVE,
+        "storage_notice": None if postgres_operations.POSTGRES_ACTIVE else
+            "O servidor está usando SQLite local, que não sobrevive a deploy no Render. Configure DATABASE_URL com PostgreSQL persistente antes de criar ou alterar perfis.",
+    }
 
 
 @app.get("/api/superadmin/route-monitor")
@@ -3875,6 +3913,7 @@ async def dismiss_removals(request: Request, context=Depends(session_context)):
 @app.post("/api/superadmin/users/role")
 async def superadmin_user_role(request: Request, context=Depends(session_context)):
     require_superadmin_session(context[1])
+    require_persistent_user_storage()
     body = await request.json()
     username = str(body.get("username") or "").strip()[:120]
     name = str(body.get("name") or username).strip()[:180]
@@ -3909,6 +3948,7 @@ async def superadmin_user_role(request: Request, context=Depends(session_context
 @app.delete("/api/superadmin/users/{username}")
 async def superadmin_delete_user(username: str, context=Depends(session_context)):
     require_superadmin_session(context[1])
+    require_persistent_user_storage()
     clean = str(username or "").strip()[:120]
     current = str(context[1]["user"].get("usuario") or "")
     if not clean:
@@ -4095,10 +4135,6 @@ async def cto_attenuation(request: Request, context=Depends(session_context)):
     return result
 
 
-def _tracking_key(token: str) -> str:
-    return "customer-tracking-v1:" + hashlib.sha256(token.encode()).hexdigest()
-
-
 def _live_location_key(technician: str) -> str:
     normalized = re.sub(r"\s+", " ", str(technician or "").strip().casefold())
     return "technician-live-location-v1:" + hashlib.sha256(normalized.encode()).hexdigest()
@@ -4124,11 +4160,6 @@ def _shift_is_active(snapshot: dict | None, now: datetime | None = None) -> bool
     )
 
 
-def _active_tracking_key(technician: str) -> str:
-    normalized = re.sub(r"\s+", " ", str(technician or "").strip().casefold())
-    return "technician-active-tracking-v1:" + hashlib.sha256(normalized.encode()).hexdigest()
-
-
 def _os_tracking_cache_key(token_hash: str) -> str:
     return "os-tracking-v1:" + token_hash
 
@@ -4145,32 +4176,185 @@ async def _tracking_for_token(token: str) -> dict[str, Any]:
     return session
 
 
+def _tracking_secret() -> bytes:
+    value = (
+        os.getenv("TRACKING_IDENTITY_SECRET") or os.getenv("SESSION_SECRET")
+        or os.getenv("DATA_ENCRYPTION_KEY") or os.getenv("SESSION_ENCRYPTION_KEY")
+        or os.getenv("DATABASE_URL") or os.getenv("EBF_DATABASE_URL") or ""
+    ).strip()
+    if not value:
+        raise HTTPException(503, "A confirmação de identidade ainda não está configurada no servidor.")
+    return value.encode()
+
+
+def _tracking_digest(purpose: str, value: str) -> str:
+    return hmac.new(_tracking_secret(), f"{purpose}:{value}".encode(), hashlib.sha256).hexdigest()
+
+
+def _valid_cpf(value: Any) -> str | None:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if len(digits) != 11 or len(set(digits)) == 1:
+        return None
+    for offset, length in ((0, 9), (0, 10)):
+        total = sum(int(digits[offset + index]) * (length + 1 - index) for index in range(length))
+        check = (total * 10) % 11
+        if check == 10:
+            check = 0
+        if check != int(digits[length]):
+            return None
+    return digits
+
+
+def _titular_cpf_from_sgp(client: SGPClient, order: dict[str, Any]) -> str | None:
+    direct = _valid_cpf(
+        order.get("cliente_cpf") or order.get("cliente_cpfcnpj") or order.get("cpfcnpj") or order.get("cpf")
+    )
+    if direct:
+        return direct
+    client_id = order.get("cliente_id") or order.get("client_id")
+    contract_id = order.get("contrato_id") or order.get("clientecontrato_id") or order.get("contrato")
+    if not client_id and not contract_id:
+        return None
+    field, identifier = ("cliente", client_id) if client_id else ("contrato", contract_id)
+    result = client.request(
+        "POST", "/api/ura/clientes/",
+        form={field: identifier, "limit": 10, "exibir_conexao": "true", "omitir_titulos": "true"},
+    )
+    customers = result.get("clientes", []) if isinstance(result, dict) else []
+    customer = None
+    if field == "cliente":
+        customer = next((item for item in customers if isinstance(item, dict) and
+                         str(item.get("id") or item.get("cliente_id") or "") == str(client_id)), None)
+    else:
+        for item in customers:
+            if not isinstance(item, dict):
+                continue
+            contracts = item.get("contratos") if isinstance(item.get("contratos"), list) else []
+            if any(str(contract.get("contrato") or contract.get("id") or contract.get("clientecontrato_id") or "") == str(contract_id)
+                   for contract in contracts if isinstance(contract, dict)):
+                customer = item
+                break
+        if customer is None and len(customers) == 1 and isinstance(customers[0], dict):
+            customer = customers[0]
+    if not isinstance(customer, dict):
+        return None
+    return _valid_cpf(customer.get("cpfcnpj") or customer.get("cpf_cnpj") or customer.get("cpf"))
+
+
+def _tracking_device_id(request: Request) -> str:
+    device_id = str(request.headers.get("x-tracking-device") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", device_id):
+        raise HTTPException(400, "Não foi possível identificar este aparelho. Recarregue o link.")
+    return device_id
+
+
+def _tracking_device_cache_key(session: dict[str, Any], device_id: str) -> str:
+    device_hash = _tracking_digest("device", device_id)
+    return f"tracking-device-verified-v1:{session['token_hash']}:{device_hash}"
+
+
+async def _require_verified_tracking_device(session: dict[str, Any], request: Request) -> None:
+    device_id = _tracking_device_id(request)
+    key = _tracking_device_cache_key(session, device_id)
+    verified = await run_sync(lambda: cache_snapshot(key, None, 12 * 3600))
+    if not verified:
+        raise HTTPException(403, "Confirme o CPF do titular para acessar este acompanhamento.")
+
+
+def _tracking_order_from_sgp(client: SGPClient, order_id: int) -> dict[str, Any] | None:
+    try:
+        order = client.order(order_id, include_onu=False, include_signal_context=False)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Tracking detail lookup failed for OS %s (%s)", order_id, type(exc).__name__,
+        )
+        order = None
+    if order:
+        return order
+    try:
+        row = next((item for item in client.route_monitor_orders()
+                    if str(item.get("os_id") or item.get("id") or "") == str(order_id)), None)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Tracking route fallback failed for OS %s (%s)", order_id, type(exc).__name__,
+        )
+        return None
+    if not row:
+        return None
+    normalized = dict(row)
+    normalized.setdefault("os_id", row.get("id") or order_id)
+    normalized.setdefault("os_status", row.get("status_id", 0))
+    normalized.setdefault("os_status_txt", row.get("status"))
+    normalized.setdefault("os_tecnico_responsavel", row.get("responsavel"))
+    normalized.setdefault("os_tecnicos_auxiliares", row.get("tecnicos_auxiliares") or [])
+    normalized.setdefault("os_motivo_descricao", row.get("motivo"))
+    normalized.setdefault("os_data_agendamento", row.get("data_agendamento"))
+    return normalized
+
+
 async def _tracking_for_technician(order_id: int, context) -> dict[str, Any]:
-    order = await run_sync(lambda: context[2].order(order_id, include_onu=False, include_signal_context=False))
+    order = await run_sync(lambda: _tracking_order_from_sgp(context[2], order_id))
     if not order or not technician_owns_order(order, context[1]):
         raise HTTPException(403, "Esta OS não pertence ao técnico logado.")
+    try:
+        current_status = int(order.get("os_status", -1))
+    except (TypeError, ValueError):
+        current_status = -1
     session = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
     if not session:
         return await _prepare_order_tracking(order_id, context)
     # Reconcile with SGP on every technician operation so a close/pause done
     # outside this app also stops GPS writes and customer chat.
-    current_status = int(order.get("os_status") or -1)
     if current_status in (1, 3) and session.get("state") not in ("finished", "paused", "cancelled"):
         ended_state = "finished" if current_status == 1 else "paused"
         await _end_order_tracking(order_id, ended_state)
         session["state"] = ended_state
         session["last_location"] = None
+    session["os_status"] = current_status
     return session
 
 
-async def _prepare_order_tracking(order_id: int, context) -> dict[str, Any]:
-    order = await run_sync(lambda: context[2].order(order_id, include_onu=False, include_signal_context=False))
-    if not order or int(order.get("os_status") or -1) != 2 or not technician_owns_order(order, context[1]):
-        raise HTTPException(403, "O acompanhamento exige uma OS em execução atribuída ao técnico logado.")
+async def _prepare_order_tracking(order_id: int, context, *, require_titular_cpf: bool = False) -> dict[str, Any]:
+    order = await run_sync(lambda: _tracking_order_from_sgp(context[2], order_id))
+    mode = context[1].get("user", {}).get("mode")
+    is_supervisor = mode == "superadmin"
+    try:
+        order_status = int(order.get("os_status", -1)) if order else -1
+    except (TypeError, ValueError):
+        order_status = -1
+    assigned_technician = str((order or {}).get("os_tecnico_responsavel") or "").strip()
+    valid_status = order_status in (0, 2) if is_supervisor else order_status == 2
+    valid_owner = bool(assigned_technician) if is_supervisor else bool(order and technician_owns_order(order, context[1]))
+    if not order or not valid_status or not valid_owner:
+        raise HTTPException(403, "O acompanhamento exige uma OS aberta ou em execução atribuída ao técnico.")
     existing = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
+    titular_cpf_hash = str((existing or {}).get("titular_cpf_hash") or "")
+    if not titular_cpf_hash:
+        try:
+            titular_cpf = await run_sync(lambda: _titular_cpf_from_sgp(context[2], order))
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Titular identity lookup failed for OS %s (%s)", order_id, type(exc).__name__,
+            )
+            titular_cpf = None
+        if titular_cpf:
+            try:
+                titular_cpf_hash = _tracking_digest("titular-cpf", titular_cpf)
+            except HTTPException:
+                if require_titular_cpf:
+                    raise
+                titular_cpf_hash = ""
+    if require_titular_cpf and not titular_cpf_hash:
+        raise HTTPException(422, "O SGP não forneceu um CPF válido do titular desta OS. Confira o cadastro antes de gerar o link.")
     if existing and existing.get("state") in ("traveling", "arrived"):
+        if titular_cpf_hash and not existing.get("titular_cpf_hash"):
+            existing["titular_cpf_hash"] = titular_cpf_hash
+            await run_sync(lambda: postgres_operations.save_tracking_session(existing["token_hash"], existing, 12 * 3600))
         return existing
     if existing and existing.get("state") == "ready" and existing.get("ready_token"):
+        if titular_cpf_hash and not existing.get("titular_cpf_hash"):
+            existing["titular_cpf_hash"] = titular_cpf_hash
+            await run_sync(lambda: postgres_operations.save_tracking_session(existing["token_hash"], existing, 12 * 3600))
         return existing
     destination = _coordinates(order.get("endereco_ll") or order.get("contrato_endereco_ll"))
     if not destination:
@@ -4182,14 +4366,16 @@ async def _prepare_order_tracking(order_id: int, context) -> dict[str, Any]:
         await _end_order_tracking(order_id, "cancelled")
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    technician = _technician_identity(context[1])
+    technician = assigned_technician if is_supervisor else _technician_identity(context[1])
     expires = time.time() + 12 * 3600
     value = {"token_hash": token_hash, "order_id": int(order_id), "technician": technician,
              "client": str(order.get("cliente") or "Cliente").strip().split()[0],
              "destination": {"latitude": destination[0], "longitude": destination[1]},
              "state": "ready", "created_at": time.time(), "expires_at": expires,
              "messages": [], "last_location": None, "unread_client": 0, "unread_technician": 0,
-             "tracking_url": None, "ready_token": token}
+             "tracking_url": None, "ready_token": token, "os_status": order_status,
+             "titular_cpf_hash": titular_cpf_hash or None,
+             "created_by": str((context[1].get("user") or {}).get("usuario") or "Técnico")}
     await run_sync(lambda: postgres_operations.save_tracking_session(token_hash, value, 12 * 3600))
     await run_sync(lambda: postgres_operations.save_tracking_session(f"os-index-{order_id}", {"token_hash": token_hash}, 12 * 3600))
     return value
@@ -4259,53 +4445,16 @@ async def technician_live_location(request: Request, context=Depends(session_con
 
 @app.post("/api/office/orders/{order_id}/tracking-link")
 async def create_tracking_link(order_id: int, request: Request, context=Depends(session_context)):
-    require_office_tools(context[1])
-    order = await run_sync(lambda: context[2].order(order_id, include_onu=False, include_signal_context=False))
-    if not order or int(order.get("os_id") or 0) != int(order_id):
-        raise HTTPException(404, "OS não encontrada.")
-    reason = str(order.get("os_motivo_descricao") or "")
-    if "instala" not in reason.casefold() and "ativa" not in reason.casefold():
-        raise HTTPException(422, "O acompanhamento público está disponível somente para instalações.")
-    technician = str(order.get("os_tecnico_responsavel") or "").strip()
-    if not technician:
-        raise HTTPException(422, "Direcione a instalação para um técnico antes de gerar o link.")
-    destination = _coordinates(order.get("endereco_ll") or order.get("contrato_endereco_ll"))
-    if not destination:
-        raise HTTPException(422, "A instalação não possui coordenadas válidas para o mapa.")
-    token = secrets.token_urlsafe(32)
-    expires_at = time.time() + 8 * 3600
-    client_name = str(order.get("cliente") or "Cliente").strip().split()[0]
-    payload = {"os_id": int(order_id), "technician": technician, "client": client_name,
-               "destination": {"latitude": destination[0], "longitude": destination[1]},
-               "scheduled_at": order.get("os_data_agendamento"), "expires_at": expires_at,
-               "created_by": str((context[1].get("user") or {}).get("usuario") or "Escritório")}
-    await run_sync(lambda: save_cache_snapshot(_tracking_key(token), payload, 8 * 3600))
-    await run_sync(lambda: save_cache_snapshot(_active_tracking_key(technician), {
-        "token_hash": hashlib.sha256(token.encode()).hexdigest(), "os_id": int(order_id),
-        "expires_at": expires_at,
-    }, 8 * 3600))
-    return {"url": str(request.base_url).rstrip("/") + f"/acompanhar/{token}", "expires_at": expires_at}
-
-
-@app.get("/api/public/tracking/{token}")
-async def public_tracking(token: str):
-    if not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", token):
-        raise HTTPException(404, "Acompanhamento não encontrado.")
-    tracking = await run_sync(lambda: cache_snapshot(_tracking_key(token), retention_seconds=8 * 3600))
-    if not tracking or float(tracking.get("expires_at") or 0) <= time.time():
-        raise HTTPException(410, "Este acompanhamento expirou.")
-    active = await run_sync(lambda: cache_snapshot(_active_tracking_key(tracking["technician"]), retention_seconds=8 * 3600))
-    if not active or not hmac.compare_digest(str(active.get("token_hash") or ""), hashlib.sha256(token.encode()).hexdigest()):
-        raise HTTPException(410, "Este acompanhamento foi encerrado ou substituído por outro serviço.")
-    shift = await run_sync(lambda: cache_snapshot(_technician_shift_key(tracking["technician"]), retention_seconds=2 * 86400))
-    location = await run_sync(lambda: cache_snapshot(_live_location_key(tracking["technician"]), retention_seconds=12 * 3600))
-    fresh = bool(_shift_is_active(shift) and location and time.time() - float(location.get("updated_at") or 0) <= 180)
-    public_location = ({key: location.get(key) for key in ("latitude", "longitude", "accuracy", "updated_at")}
-                       if fresh else None)
-    return {"client": tracking["client"], "technician": tracking["technician"].split()[0],
-            "scheduled_at": tracking.get("scheduled_at"), "destination": tracking["destination"],
-            "location": public_location, "status": "on_the_way" if fresh else "waiting_location",
-            "expires_at": tracking["expires_at"]}
+    require_superadmin_session(context[1])
+    session = await _prepare_order_tracking(order_id, context, require_titular_cpf=True)
+    if session.get("state") in ("arrived", "finished", "paused", "cancelled"):
+        raise HTTPException(409, "O acompanhamento desta visita já foi encerrado.")
+    url = session.get("tracking_url")
+    if not url and session.get("ready_token"):
+        url = str(request.base_url).rstrip("/") + f"/acompanhar/{session['ready_token']}"
+    if not url:
+        raise HTTPException(409, "Não foi possível obter o link desta visita.")
+    return {"url": url, "expires_at": session.get("expires_at"), "state": session.get("state")}
 
 
 @app.get("/acompanhar/{token}", include_in_schema=False)
