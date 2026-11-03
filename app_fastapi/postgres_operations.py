@@ -264,6 +264,23 @@ def delete_coverage_building(building_id: int) -> None:
     _execute("DELETE FROM coverage_buildings WHERE id=%s", (int(building_id),))
 
 
+def tracking_session(token_hash: str) -> dict[str, Any] | None:
+    return cache_snapshot(f"os-tracking-v1:{token_hash}", None, 14 * 86400)
+
+
+def tracking_session_for_order(order_id: int) -> dict[str, Any] | None:
+    index = tracking_session(f"os-index-{int(order_id)}")
+    return tracking_session(index.get("token_hash", "")) if index else None
+
+
+def save_tracking_session(token_hash: str, value: dict[str, Any], retention_seconds: int = 14 * 86400) -> None:
+    save_cache_snapshot(f"os-tracking-v1:{token_hash}", value, retention_seconds)
+
+
+def delete_tracking_session(token_hash: str) -> None:
+    _execute("DELETE FROM persistent_cache WHERE cache_key=%s", (f"os-tracking-v1:{token_hash}",))
+
+
 def coverage_pon_areas() -> list[dict[str, Any]]:
     rows = _rows("SELECT * FROM coverage_pon_areas ORDER BY lower(olt_name),slot,pon,id")
     for row in rows:
@@ -1002,6 +1019,7 @@ def configure_operations(_attempt=0) -> bool:
         "cache_snapshot","save_cache_snapshot","delete_cache_snapshots_except","delete_cache_snapshots_prefix","route_alert_reviews","save_route_alert_review",
         "coverage_buildings","save_coverage_building","delete_coverage_building",
         "coverage_pon_areas","save_coverage_pon_area","delete_coverage_pon_area",
+        "tracking_session","tracking_session_for_order","save_tracking_session","delete_tracking_session",
         "completed_between","save_location","assign","assignments_for","snapshot",
     ):
         setattr(operations, name, globals()[name])

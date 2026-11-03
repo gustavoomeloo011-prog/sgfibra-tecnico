@@ -1199,11 +1199,183 @@ async def technician_order_status(order_id: int, request: Request, context=Depen
             raise SGPError("Esta OS não pertence ao técnico logado.", 403)
         return client.update_order_status(order_id, status, service, current=order)
     result = await call_context(context, update)
+    tracking_warning = None
+    if status in (1, 3):
+        await _end_order_tracking(order_id, "finished" if status == 1 else "paused")
+    elif status == 2:
+        # Each trip gets a fresh token. Pausing/reopening an OS must not reuse
+        # the prior customer's link.
+        try:
+            await _prepare_order_tracking(order_id, context)
+        except HTTPException as exc:
+            # The SGP status update already succeeded. Report tracking setup
+            # separately so the UI never claims GPS/chat are active.
+            tracking_warning = str(exc.detail)
+        else:
+            tracking_warning = None
     await run_sync(lambda: postgres_operations.delete_order_text_draft(order_id, session_username(context[1])))
     await invalidate_cached(context[1], "orders-today:")
     await invalidate_cached(context[1], "technician-score")
     await invalidate_cached(context[1], f"order-detail-v1:{order_id}")
-    return {"ok": True, "result": result}
+    return {"ok": True, "result": result, "tracking_warning": tracking_warning}
+
+
+@app.get("/api/technician/orders/{order_id}/tracking")
+async def technician_order_tracking(order_id: int, context=Depends(session_context)):
+    require_technician(context[1])
+    session = await _tracking_for_technician(order_id, context)
+    token = session.get("token")
+    if not token:
+        # Tokens are never persisted in recoverable form. Return the URL only
+        # at session creation; clients can keep using its token thereafter.
+        index = await run_sync(lambda: postgres_operations.tracking_session(f"os-index-{order_id}"))
+        token_hash = str((index or {}).get("token_hash") or "")
+        session = await run_sync(lambda: postgres_operations.tracking_session(token_hash)) or session
+    return {"state": session.get("state"), "order_id": order_id,
+            "token": session.get("ready_token") if session.get("state") == "ready" else None,
+            "tracking_url": session.get("tracking_url"), "last_location": session.get("last_location"),
+            "messages": session.get("messages", []), "unread_technician": session.get("unread_technician", 0),
+            "expires_at": session.get("expires_at")}
+
+
+@app.post("/api/technician/orders/{order_id}/tracking/start")
+async def technician_start_order_tracking(order_id: int, request: Request, context=Depends(session_context)):
+    require_technician(context[1])
+    body = await request.json()
+    def validate_running():
+        order = context[2].order(order_id, include_onu=False, include_signal_context=False)
+        if not order or not technician_owns_order(order, context[1]):
+            raise SGPError("Esta OS não pertence ao técnico logado.", 403)
+        if int(order.get("os_status") or -1) != 2:
+            raise SGPError("Inicie a OS como Em execução antes de ativar o acompanhamento.", 409)
+    await call_context(context, lambda client, session: validate_running())
+    session = await _tracking_for_technician(order_id, context)
+    if session.get("state") in ("arrived", "finished", "cancelled", "paused"):
+        raise HTTPException(409, "O acompanhamento desta visita foi encerrado.")
+    try:
+        lat, lon = float(body["latitude"]), float(body["longitude"])
+        accuracy = max(0.0, min(float(body.get("accuracy") or 0), 5000.0))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180): raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, "Localização inválida.")
+    session["state"] = "traveling"
+    session["last_location"] = {"latitude": lat, "longitude": lon, "accuracy": accuracy, "updated_at": time.time()}
+    token = str(session.pop("ready_token", ""))
+    if not token:
+        raise HTTPException(409, "O link desta visita já foi criado e não pode ser regenerado.")
+    session["tracking_url"] = str(request.base_url).rstrip("/") + f"/acompanhar/{token}"
+    session.pop("token", None)
+    await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
+    return {"state": "traveling", "tracking_url": session["tracking_url"], "expires_at": session["expires_at"]}
+
+
+@app.post("/api/technician/orders/{order_id}/tracking/location")
+async def technician_order_location(order_id: int, request: Request, context=Depends(session_context)):
+    require_technician(context[1])
+    session = await _tracking_for_technician(order_id, context)
+    if session.get("state") != "traveling": raise HTTPException(409, "O deslocamento não está ativo.")
+    if session.get("technician") and not _same_person(session.get("technician"), _technician_identity(context[1])):
+        raise HTTPException(403, "Esta sessão não pertence ao técnico logado.")
+    body = await request.json()
+    try:
+        lat, lon = float(body["latitude"]), float(body["longitude"])
+        accuracy = max(0.0, min(float(body.get("accuracy") or 0), 5000.0))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180): raise ValueError
+    except (KeyError, TypeError, ValueError): raise HTTPException(400, "Localização inválida.")
+    session["last_location"] = {"latitude": lat, "longitude": lon, "accuracy": accuracy, "updated_at": time.time()}
+    await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
+    return {"ok": True}
+
+
+@app.post("/api/technician/orders/{order_id}/tracking/arrived")
+async def technician_order_arrived(order_id: int, context=Depends(session_context)):
+    require_technician(context[1])
+    session = await _tracking_for_technician(order_id, context)
+    if session.get("state") != "traveling": raise HTTPException(409, "Não há deslocamento ativo para esta OS.")
+    session["state"] = "arrived"
+    session["arrived_at"] = time.time()
+    session["last_location"] = None
+    session["chat_closed"] = True
+    await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
+    return {"state": "arrived", "arrived_at": session["arrived_at"]}
+
+
+@app.get("/api/public/tracking/{token}")
+async def public_order_tracking(token: str):
+    try:
+        session = await _tracking_for_token(token)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        session = None
+    if session is None:
+        return await _legacy_public_tracking_payload(token)
+    if session.get("state") in ("cancelled", "finished", "paused"):
+        raise HTTPException(410, "Este acompanhamento foi encerrado.")
+    loc = session.get("last_location")
+    fresh = session.get("state") == "traveling" and loc and time.time() - float(loc.get("updated_at") or 0) <= 90
+    return {"client": session.get("client"), "technician": str(session.get("technician") or "Técnico").split()[0],
+            "destination": session.get("destination"), "location": loc if fresh else None,
+            "status": "arrived" if session.get("state") == "arrived" else "on_the_way" if fresh else "location_unavailable",
+            "updated_at": loc.get("updated_at") if loc else None,
+            "arrived_at": session.get("arrived_at"),
+            "messages": session.get("messages", []), "chat_open": session.get("state") == "traveling",
+            "unread_client": session.get("unread_client", 0)}
+
+
+@app.post("/api/public/tracking/{token}/messages")
+async def public_order_tracking_message(token: str, request: Request):
+    body = await request.json()
+    try:
+        session = await _tracking_for_token(token)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        raise HTTPException(410, "Chat indisponível para este link antigo.")
+    return await _post_tracking_message(session, "Cliente", body.get("text"), "client")
+
+
+async def _legacy_public_tracking_payload(token: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", token):
+        raise HTTPException(404, "Acompanhamento não encontrado.")
+    tracking = await run_sync(lambda: cache_snapshot(_tracking_key(token), retention_seconds=8 * 3600))
+    if not tracking or float(tracking.get("expires_at") or 0) <= time.time():
+        raise HTTPException(410, "Este acompanhamento expirou.")
+    active = await run_sync(lambda: cache_snapshot(_active_tracking_key(tracking["technician"]), retention_seconds=8 * 3600))
+    if not active or not hmac.compare_digest(str(active.get("token_hash") or ""), hashlib.sha256(token.encode()).hexdigest()):
+        raise HTTPException(410, "Este acompanhamento foi encerrado ou substituído por outro serviço.")
+    shift = await run_sync(lambda: cache_snapshot(_technician_shift_key(tracking["technician"]), retention_seconds=2 * 86400))
+    location = await run_sync(lambda: cache_snapshot(_live_location_key(tracking["technician"]), retention_seconds=12 * 3600))
+    fresh = bool(_shift_is_active(shift) and location and time.time() - float(location.get("updated_at") or 0) <= 180)
+    public_location = ({key: location.get(key) for key in ("latitude", "longitude", "accuracy", "updated_at")} if fresh else None)
+    return {"client": tracking["client"], "technician": tracking["technician"].split()[0],
+            "scheduled_at": tracking.get("scheduled_at"), "destination": tracking["destination"],
+            "location": public_location, "status": "on_the_way" if fresh else "waiting_location",
+            "expires_at": tracking["expires_at"], "messages": [], "chat_open": False}
+
+
+async def _post_tracking_message(session: dict[str, Any], author: str, text_value: str, side: str):
+    if session.get("state") != "traveling" or session.get("chat_closed"):
+        raise HTTPException(409, "O chat foi encerrado quando o técnico chegou ao endereço.")
+    text_value = str(text_value or "").strip()
+    if not text_value or len(text_value) > 1000: raise HTTPException(400, "A mensagem deve ter de 1 a 1000 caracteres.")
+    messages = session.setdefault("messages", [])
+    recent = [m for m in messages if float(m.get("created_at") or 0) > time.time() - 60 and m.get("side") == side]
+    if len(recent) >= 10: raise HTTPException(429, "Aguarde antes de enviar novas mensagens.")
+    messages.append({"author": author, "text": text_value, "created_at": time.time(), "side": side})
+    session["messages"] = messages[-300:]
+    target = "unread_client" if side == "technician" else "unread_technician"
+    session[target] = int(session.get(target) or 0) + 1
+    await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
+    return {"ok": True}
+
+
+@app.post("/api/technician/orders/{order_id}/tracking/messages")
+async def technician_tracking_message(order_id: int, request: Request, context=Depends(session_context)):
+    require_technician(context[1])
+    session = await _tracking_for_technician(order_id, context)
+    body = await request.json()
+    return await _post_tracking_message(session, _technician_identity(context[1]), body.get("text"), "technician")
 
 
 @app.post("/api/technician/orders/{order_id}/draft")
@@ -1524,6 +1696,9 @@ async def office_assign_order(order_id: int, request: Request, context=Depends(s
         finally:
             await stock_mutation_finished()
         await logistics_result(source, actor, {"action": "Direcionamento confirmado no SGP", **result})
+        # Reassignment revokes the old public link immediately. A new
+        # technician/session can create a fresh link when the OS starts again.
+        await _end_order_tracking(order_id, "cancelled")
         return result
     return await exclusive_cto_query(execute, key=f"order-assignment:{order_id}",
                                      busy_message="Esta OS já está sendo direcionada. Aguarde a conclusão.")
@@ -3820,6 +3995,87 @@ def _shift_is_active(snapshot: dict | None, now: datetime | None = None) -> bool
 def _active_tracking_key(technician: str) -> str:
     normalized = re.sub(r"\s+", " ", str(technician or "").strip().casefold())
     return "technician-active-tracking-v1:" + hashlib.sha256(normalized.encode()).hexdigest()
+
+
+def _os_tracking_cache_key(token_hash: str) -> str:
+    return "os-tracking-v1:" + token_hash
+
+
+async def _tracking_for_token(token: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", token):
+        raise HTTPException(404, "Acompanhamento não encontrado.")
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    session = await run_sync(lambda: postgres_operations.tracking_session(token_hash))
+    if not session or float(session.get("expires_at") or 0) <= time.time():
+        raise HTTPException(410, "Este link expirou.")
+    if session.get("state") == "cancelled":
+        raise HTTPException(410, "Este link foi revogado.")
+    return session
+
+
+async def _tracking_for_technician(order_id: int, context) -> dict[str, Any]:
+    order = await run_sync(lambda: context[2].order(order_id, include_onu=False, include_signal_context=False))
+    if not order or not technician_owns_order(order, context[1]):
+        raise HTTPException(403, "Esta OS não pertence ao técnico logado.")
+    session = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
+    if not session:
+        return await _prepare_order_tracking(order_id, context)
+    # Reconcile with SGP on every technician operation so a close/pause done
+    # outside this app also stops GPS writes and customer chat.
+    current_status = int(order.get("os_status") or -1)
+    if current_status in (1, 3) and session.get("state") not in ("finished", "paused", "cancelled"):
+        ended_state = "finished" if current_status == 1 else "paused"
+        await _end_order_tracking(order_id, ended_state)
+        session["state"] = ended_state
+        session["last_location"] = None
+    return session
+
+
+async def _prepare_order_tracking(order_id: int, context) -> dict[str, Any]:
+    order = await run_sync(lambda: context[2].order(order_id, include_onu=False, include_signal_context=False))
+    if not order or int(order.get("os_status") or -1) != 2 or not technician_owns_order(order, context[1]):
+        raise HTTPException(403, "O acompanhamento exige uma OS em execução atribuída ao técnico logado.")
+    existing = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
+    if existing and existing.get("state") in ("traveling", "arrived"):
+        return existing
+    if existing and existing.get("state") == "ready" and existing.get("ready_token"):
+        return existing
+    destination = _coordinates(order.get("endereco_ll") or order.get("contrato_endereco_ll"))
+    if not destination:
+        raise HTTPException(422, "A OS não possui coordenadas válidas para o acompanhamento.")
+    existing = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
+    if existing and existing.get("state") in ("traveling", "arrived", "finished"):
+        raise HTTPException(409, "Esta OS já possui acompanhamento associado.")
+    if existing:
+        await _end_order_tracking(order_id, "cancelled")
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    technician = _technician_identity(context[1])
+    expires = time.time() + 12 * 3600
+    value = {"token_hash": token_hash, "order_id": int(order_id), "technician": technician,
+             "client": str(order.get("cliente") or "Cliente").strip().split()[0],
+             "destination": {"latitude": destination[0], "longitude": destination[1]},
+             "state": "ready", "created_at": time.time(), "expires_at": expires,
+             "messages": [], "last_location": None, "unread_client": 0, "unread_technician": 0,
+             "tracking_url": None, "ready_token": token}
+    await run_sync(lambda: postgres_operations.save_tracking_session(token_hash, value, 12 * 3600))
+    await run_sync(lambda: postgres_operations.save_tracking_session(f"os-index-{order_id}", {"token_hash": token_hash}, 12 * 3600))
+    return value
+
+
+async def _end_order_tracking(order_id: int, state: str) -> None:
+    index = await run_sync(lambda: postgres_operations.tracking_session(f"os-index-{order_id}"))
+    if not index:
+        return
+    session = await run_sync(lambda: postgres_operations.tracking_session(index.get("token_hash", "")))
+    if not session:
+        return
+    session["state"] = state
+    session["ended_at"] = time.time()
+    session["last_location"] = None
+    await run_sync(lambda: postgres_operations.save_tracking_session(index["token_hash"], session, 12 * 3600))
+    if state in ("paused", "finished", "cancelled"):
+        await run_sync(lambda: postgres_operations.delete_tracking_session(f"os-index-{order_id}"))
 
 
 @app.get("/api/technician/shift")

@@ -296,6 +296,19 @@ def delete_cache_snapshots_prefix(prefix: str) -> None:
         db.execute("DELETE FROM persistent_cache WHERE cache_key LIKE ?", (f"{prefix}%",))
 
 
+def tracking_session(token_hash: str) -> dict[str, Any] | None:
+    return cache_snapshot(f"os-tracking-v1:{token_hash}", None, 14 * 86400)
+
+
+def save_tracking_session(token_hash: str, value: dict[str, Any], retention_seconds: int = 14 * 86400) -> None:
+    save_cache_snapshot(f"os-tracking-v1:{token_hash}", value, retention_seconds)
+
+
+def delete_tracking_session(token_hash: str) -> None:
+    with _db() as db:
+        db.execute("DELETE FROM persistent_cache WHERE cache_key=?", (f"os-tracking-v1:{token_hash}",))
+
+
 def route_service_times(service_day: str, order_ids: list[int]) -> dict[int, str | None]:
     """Return today's cached starts and remove route data from older days."""
     clean = list(dict.fromkeys(int(value) for value in order_ids if int(value) > 0))
