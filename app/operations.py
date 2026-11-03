@@ -96,15 +96,12 @@ def _initialize_db() -> None:
             """)
             route_seed = connection.execute("SELECT 1 FROM v2_migrations WHERE name='route-monitor-members-seed'").fetchone()
             if not route_seed:
-                defaults = (
-                    "Arthur", "Anderson Crepaldi", "Anderson Neis", "Bruno", "Clayton", "DavidR",
-                    "Eduardo", "Evertton", "Kaique", "Leonardo", "Paulo", "Silvando",
-                )
-                connection.executemany(
-                    "INSERT OR IGNORE INTO route_monitor_members VALUES(?,?,?,?)",
-                    [(name, name, "Sistema", 0) for name in defaults],
-                )
                 connection.execute("INSERT INTO v2_migrations VALUES('route-monitor-members-seed',?)", (time.time(),))
+            cleanup_seed = connection.execute("SELECT 1 FROM v2_migrations WHERE name='sgfibra-route-members-cleanup'").fetchone()
+            if not cleanup_seed:
+                connection.execute("DELETE FROM route_monitor_members WHERE lower(username) IN (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("arthur", "anderson crepaldi", "anderson neis", "bruno", "clayton", "davidr", "eduardo", "evertton", "kaique", "leonardo", "paulo", "silvando"))
+                connection.execute("INSERT INTO v2_migrations VALUES('sgfibra-route-members-cleanup',?)", (time.time(),))
             popup_seed = connection.execute("SELECT 1 FROM v2_migrations WHERE name='popup-supervisor-seed'").fetchone()
             if not popup_seed:
                 connection.execute(
