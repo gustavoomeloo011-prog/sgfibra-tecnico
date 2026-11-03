@@ -1192,8 +1192,8 @@ class SGPClient:
         selected = [
             item for item in orders
             if (
-                str(item.get("responsavel", "")).casefold().strip() == technician
-                or technician in {str(name).casefold().strip() for name in item.get("tecnicos_auxiliares", [])}
+                _same_person(item.get("responsavel"), display_name)
+                or any(_same_person(name, display_name) for name in item.get("tecnicos_auxiliares", []))
             )
             and (status == 1 or _scheduled_on(item.get("data_agendamento"), today))
         ]

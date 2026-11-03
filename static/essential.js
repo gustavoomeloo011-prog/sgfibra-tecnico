@@ -326,7 +326,7 @@ async function api(path, options = {}) {
 }
 
 function loading(text = "Consultando o SGP somente uma vez...") {
-  $("#content").innerHTML = `<section class="loading"><img src="/sgfibra-logo.png" alt="SG Fibra"><span>${esc(text)}</span></section>`;
+  $("#content").innerHTML = `<section class="loading"><span class="loading-indicator" aria-hidden="true"></span><span>${esc(text)}</span></section>`;
 }
 
 function errorView(error) {
@@ -342,42 +342,6 @@ function setPage(title) {
     link.classList.toggle("active", link.dataset.route === location.hash.slice(1));
   });
   document.body.classList.remove("menu-open");
-}
-
-const onCallDates = [
-  ["SÁBADO", "19/09/2026"], ["DOMINGO", "20/09/2026"],
-  ["SÁBADO", "26/09/2026"], ["DOMINGO", "27/09/2026"],
-  ["SÁBADO", "03/10/2026"], ["DOMINGO", "04/10/2026"],
-  ["SÁBADO", "10/10/2026"], ["DOMINGO", "11/10/2026"],
-  ["SÁBADO", "17/10/2026"], ["DOMINGO", "18/10/2026"],
-  ["SÁBADO", "24/10/2026"], ["DOMINGO", "25/10/2026"],
-];
-
-const onCallTeams = [
-  { name: "KAIKE DIAS", group: "team1", shifts: ["F","F","OK","F","F","F","OK","OK","F","F","OK","F"] },
-  { name: "ARTHUR SOUZA", group: "team1", shifts: ["F","F","OK","OK","F","F","OK","F","F","F","OK","OK"] },
-  { name: "CLAYTON ALGUSTO", group: "team1", shifts: ["F","F","OK","OK","F","F","OK","F","F","F","OK","F"] },
-  { name: "DAVID", group: "team1", shifts: ["","","","","F","F","OK","F","F","F","OK","OK"] },
-  { name: "ANDERSON NEIS", group: "team1", shifts: ["F","F","OK","F","F","F","OK","OK","F","F","OK","F"] },
-  { name: "SILVANDO DA SILVA", group: "team2", shifts: ["OK","OK","F","F","OK","F","F","F","OK","F","F","F"] },
-  { name: "BRUNO SILVA", group: "team2", shifts: ["OK","F","F","F","OK","F","F","F","OK","OK","F","F"] },
-  { name: "EDUARDO W", group: "team2", shifts: ["OK","F","F","F","OK","OK","F","F","OK","F","F","F"] },
-  { name: "EVERTON", group: "team2", shifts: ["OK","OK","F","F","OK","F","F","F","OK","F","F","F"] },
-  { name: "LEONARDO LIRA", group: "team2", shifts: ["OK","F","F","F","OK","OK","F","F","OK","OK","F","F"] },
-  { name: "PARDAL", group: "rede", shifts: ["F","F","OK","OK","F","F","OK","OK","F","F","OK","OK"] },
-  { name: "GUILHERME VIEIRA", group: "rede", shifts: ["OK","OK","F","F","OK","OK","F","F","OK","OK","F","F"] },
-  { name: "CHIQUINHO", group: "rede", shifts: ["OK","OK","F","F","OK","OK","F","F","OK","OK","F","F"] },
-];
-
-function onCallSchedule() {
-  const teamCard = (title, group) => {
-    const members = onCallTeams.filter(row => row.group === group);
-    return `<article class="on-call-team"><header><small>ESCALA DE PLANTÃO</small><h3>${title}</h3><span>${members.length} integrantes</span></header><div class="card on-call-scroll"><table class="on-call-table"><thead><tr><th class="person">Técnico</th>${onCallDates.map(([day, date]) => `<th><span>${day}</span><b>${date}</b></th>`).join("")}</tr></thead><tbody>${members.map(row => `<tr><th>${esc(row.name)}</th>${row.shifts.map(shift => `<td class="${shift === "OK" ? "ok" : shift === "APOIO" ? "support" : shift === "F" ? "off" : ""}">${shift || "—"}</td>`).join("")}</tr>`).join("")}</tbody></table></div></article>`;
-  };
-  return `<section class="on-call-section">
-    <div class="section-title"><div><small>ESCALA OPERACIONAL</small><h2>Plantão de fim de semana</h2><p>Deslize a tabela para o lado para consultar todas as datas.</p></div><div class="on-call-legend"><span class="ok">OK · plantão</span><span class="off">F · folga</span><span class="support">APOIO</span></div></div>
-    <div class="on-call-teams">${teamCard("Equipe 1", "team1")}${teamCard("Equipe 2", "team2")}${teamCard("Rede", "rede")}</div>
-  </section>`;
 }
 
 function returnObligationFormHtml(home = false) {
@@ -466,8 +430,8 @@ function homeView() {
   const supervisor = state.user?.mode === "superadmin";
   $("#content").innerHTML = `
     <section class="home-welcome">
-      <img src="/sgfibra-logo.png" alt="SG Fibra">
-      <small>BEM-VINDO</small>
+      <span class="home-brand-mark" aria-hidden="true">SG</span>
+      <small>SG FIBRA TÉCNICO</small>
       <h1>Olá, ${esc(name)}</h1>
       <p>Escolha uma ferramenta para começar. Nenhuma consulta ao SGP é feita nesta tela.</p>
     </section>
@@ -478,7 +442,7 @@ function homeView() {
       <a class="card" href="#vincular-modem"><span>◉</span><div><h2>Vincular modem</h2><p>Escolha a OLT, localize o aparelho e vincule ao cliente.</p></div><b>→</b></a>
       <button class="card" id="live-location-toggle" type="button"><span>⌖</span><div><h2>Expediente e localização</h2><p>Ative o expediente para iniciar a localização em tempo real.</p></div><b>→</b></button>
     ` : `
-      <a class="card" href="#rota"><span>◷</span><div><h2>Rota</h2><p>Acompanhe técnicos, serviços no mapa e retiradas.</p></div><b>→</b></a>
+      <a class="card" href="#rota"><span>◷</span><div><h2>Rota</h2><p>Acompanhe técnicos, instalações e serviços no mapa.</p></div><b>→</b></a>
       <a class="card" href="#vincular-modem"><span>◉</span><div><h2>Vincular modem</h2><p>Informe o ID do cliente, escolha a ONU encontrada na OLT e preencha somente a etiqueta.</p></div><b>→</b></a>
       <a class="card" href="#procurar-modem"><span>⌕</span><div><h2>Procurar modem</h2><p>Localize uma ONU em todas as OLTs pelos seis últimos caracteres.</p></div><b>→</b></a>
       ${supervisor ? `<a class="card" href="#relatorios"><span>▥</span><div><h2>Relatórios</h2><p>Análise de trocas e resumo semanal.</p></div><b>→</b></a>` : ""}
@@ -487,8 +451,7 @@ function homeView() {
       <a class="card" href="#acessos"><span>♙</span><div><h2>Acessos</h2><p>Autorizar técnicos, escritório, supervisores ou bloquear usuários.</p></div><b>→</b></a>`}
       <a class="card" href="#cto"><span>◫</span><div><h2>Portas ativas da CTO</h2><p>Conferir contratos ativos, slot, PON e identificar as portas da caixa.</p></div><b>→</b></a>
     `}</section>
-    ${supervisor ? `<section class="card page-intro"><b>↩</b><h2>Devolução de materiais</h2><p>Modens de troca, conectores e lançamentos manuais agora ficam em uma tela própria.</p><a class="primary button-link" href="#retiradas">Abrir devoluções</a></section>` : ""}
-    ${technician ? onCallSchedule() : ""}`;
+    `;
   if(technician){const button=$("#live-location-toggle");const closed=localSaoPauloHour()>=19;button.innerHTML=`<span>⌖</span><div><h2>Expediente e localização</h2><p>${technicianShiftActive?'Expediente ativo · localização em tempo real.':closed?'Compartilhamento encerrado no horário programado.':'Ative o expediente para iniciar a localização.'}</p></div><b>${technicianShiftActive?'Encerrar':closed?'Encerrado':'Ativar'}</b>`;button.disabled=closed&&!technicianShiftActive;button.onclick=toggleTechnicianShift;}
 }
 
@@ -567,8 +530,8 @@ async function materialUsageView(period = "day", selectedDate = localDateValue()
 function routeFolderView() {
   if (!["superadmin", "office"].includes(state.user?.mode)) return homeView();
   setPage("Rota");
-  const visitCard=state.user?.mode==="superadmin"?`<a class="card folder-card" href="#acompanhamento-instalacoes"><b>5</b><h2>Acompanhamento das instalações</h2><p>Veja deslocamentos, mensagens do cliente e endereços IP registrados.</p></a>`:"";
-  $("#content").innerHTML = `<section class="hero"><div><small>OPERAÇÃO EM CAMPO</small><h1>Rota</h1><p>Escolha a ferramenta que deseja abrir.</p></div><b>◷</b></section><section class="folder-grid"><a class="card folder-card" href="#acompanhar-rota"><b>1</b><h2>Acompanhar rota</h2><p>Veja a agenda, o tempo em atendimento e as notificações dos técnicos.</p></a><a class="card folder-card" href="#mapa-servicos"><b>2</b><h2>Mapa de serviços</h2><p>Compare a posição dos técnicos com as ocorrências abertas do dia.</p></a><a class="card folder-card" href="#jogar-retirada"><b>3</b><h2>Jogar retirada</h2><p>Consulte clientes elegíveis e encaminhe a retirada ao técnico.</p></a><a class="card folder-card" href="#puxar-rompimento"><b>4</b><h2>Puxar rompimento</h2><p>Selecione OLT, Slot e PON e quantifique os clientes online e offline.</p></a>${visitCard}</section>`;
+  const visitCard=state.user?.mode==="superadmin"?`<a class="card folder-card" href="#acompanhamento-instalacoes"><b>4</b><h2>Acompanhamento das instalações</h2><p>Veja deslocamentos, mensagens do cliente e endereços IP registrados.</p></a>`:"";
+  $("#content").innerHTML = `<section class="hero"><div><small>OPERAÇÃO EM CAMPO</small><h1>Rota</h1><p>Escolha a ferramenta que deseja abrir.</p></div><b>◷</b></section><section class="folder-grid"><a class="card folder-card" href="#acompanhar-rota"><b>1</b><h2>Acompanhar rota</h2><p>Veja a agenda, o tempo em atendimento e as notificações dos técnicos.</p></a><a class="card folder-card" href="#mapa-servicos"><b>2</b><h2>Mapa de serviços</h2><p>Compare a posição dos técnicos com as ocorrências abertas do dia.</p></a><a class="card folder-card" href="#puxar-rompimento"><b>3</b><h2>Puxar rompimento</h2><p>Selecione OLT, Slot e PON e quantifique os clientes online e offline.</p></a>${visitCard}</section>`;
 }
 
 let supervisorVisitTrackingTimer=null;
@@ -705,7 +668,7 @@ async function logisticsCasesView() {
     const data = await api("/api/logistics/cases");
     const supervisor = state.user.mode === "superadmin";
     const labels = { open: "Pendente", review: "Em análise", resolved: "Resolvido" };
-    $("#content").innerHTML = `<section class="hero"><div><small>LOGÍSTICA INTEGRADA</small><h1>Divergências de materiais</h1><p>Registre diferenças de saldo, uso ou devolução. O histórico não altera automaticamente o SGP.</p></div></section><div class="toolbar"><a class="secondary button-link" href="${supervisor ? '#estoque' : '#home'}">Voltar</a>${supervisor ? '<a class="secondary button-link" href="#conferencia-saldo">Conferir saldo</a><a class="secondary button-link" href="#materiais-usados">Conectores usados</a><a class="secondary button-link" href="#retiradas">Devoluções</a>' : ''}</div><form id="logistics-new" class="card"><h2>Informar divergência</h2><label>Material, OS ou estoque<input name="subject" required minlength="3" maxlength="160"></label><label>O que precisa ser conferido?<textarea name="message" required minlength="5" maxlength="2000" placeholder="Informe a data, quantidade e o saldo esperado. Não envie senhas."></textarea></label><button class="primary">Enviar para análise</button><p class="logistics-result" role="status"></p></form><section class="launched-modem-list">${(data.items || []).map(item => `<article class="card"><small>${esc(labels[item.status] || item.status)} · ${esc(item.owner)}</small><h2>${esc(item.subject)}</h2><details><summary>Ver histórico (${item.events.length})</summary>${item.events.map(entry => `<p><strong>${esc(entry.actor)}</strong> · ${esc(new Date(entry.created_at * 1000).toLocaleString('pt-BR'))}<br>${esc(entry.message || '')}</p>`).join('')}</details><form data-case="${esc(item.id)}"><label>Resposta / justificativa<textarea name="message" required minlength="5" maxlength="2000"></textarea></label>${supervisor ? `<label>Situação<select name="status"><option value="review">Em análise</option><option value="resolved">Resolvido</option><option value="open">Pendente</option></select></label>` : ''}<button class="secondary">${supervisor ? 'Salvar análise' : 'Enviar informação / reabrir'}</button><p class="logistics-result" role="status"></p></form></article>`).join('') || '<article class="card">Nenhuma divergência registrada.</article>'}</section>`;
+    $("#content").innerHTML = `<section class="hero"><div><small>LOGÍSTICA INTEGRADA</small><h1>Divergências de materiais</h1><p>Registre diferenças de saldo, uso ou devolução. O histórico não altera automaticamente o SGP.</p></div></section><div class="toolbar"><a class="secondary button-link" href="${supervisor ? '#estoque' : '#home'}">Voltar</a>${supervisor ? '<a class="secondary button-link" href="#conferencia-saldo">Conferir saldo</a><a class="secondary button-link" href="#materiais-usados">Conectores usados</a>' : ''}</div><form id="logistics-new" class="card"><h2>Informar divergência</h2><label>Material, OS ou estoque<input name="subject" required minlength="3" maxlength="160"></label><label>O que precisa ser conferido?<textarea name="message" required minlength="5" maxlength="2000" placeholder="Informe a data, quantidade e o saldo esperado. Não envie senhas."></textarea></label><button class="primary">Enviar para análise</button><p class="logistics-result" role="status"></p></form><section class="launched-modem-list">${(data.items || []).map(item => `<article class="card"><small>${esc(labels[item.status] || item.status)} · ${esc(item.owner)}</small><h2>${esc(item.subject)}</h2><details><summary>Ver histórico (${item.events.length})</summary>${item.events.map(entry => `<p><strong>${esc(entry.actor)}</strong> · ${esc(new Date(entry.created_at * 1000).toLocaleString('pt-BR'))}<br>${esc(entry.message || '')}</p>`).join('')}</details><form data-case="${esc(item.id)}"><label>Resposta / justificativa<textarea name="message" required minlength="5" maxlength="2000"></textarea></label>${supervisor ? `<label>Situação<select name="status"><option value="review">Em análise</option><option value="resolved">Resolvido</option><option value="open">Pendente</option></select></label>` : ''}<button class="secondary">${supervisor ? 'Salvar análise' : 'Enviar informação / reabrir'}</button><p class="logistics-result" role="status"></p></form></article>`).join('') || '<article class="card">Nenhuma divergência registrada.</article>'}</section>`;
     if (supervisor) $("#content .toolbar").insertAdjacentHTML("beforeend", '<a class="secondary button-link" href="#historico-logistica">Histórico de operações</a>');
     $("#content").querySelectorAll("form").forEach(form => form.onsubmit = async event => {
       event.preventDefault();
@@ -1803,11 +1766,12 @@ function detailValue(order, keys, fallback = "Não informado") {
   return fallback;
 }
 
-async function technicianOrderDetail(orderId) {
+async function technicianOrderDetail(orderId, force = false) {
   setPage("Detalhes da OS");
   loading("Abrindo esta OS...");
   try {
-    const data = await api(`/api/technician/orders/${orderId}`), order = data.order || {}, materials = data.materials || [], photos = data.photos || [], draft = data.draft;
+    const data = await api(`/api/technician/orders/${orderId}${force ? "?refresh=1" : ""}`), order = data.order || {}, materials = data.materials || [], photos = data.photos || [], draft = data.draft;
+    const orderWarnings = Array.isArray(data.warnings) ? data.warnings : [];
     const supervisor = ["superadmin", "office"].includes(state.user?.mode), closed = Number(order.os_status) === 1, readOnly = closed || supervisor, onu = order.onu;
     const canEditOnuLabel = state.user?.mode === "technician" && !closed && onu;
     const online = order.servico_online === true || ["1", "true", "sim", "online"].includes(String(order.servico_online || "").toLowerCase());
@@ -1819,6 +1783,7 @@ async function technicianOrderDetail(orderId) {
         <nav class="order-screen-tabs"><button data-order-pane="summary" class="active"><b>⌂</b><span>Resumo</span></button><button data-order-pane="status"><b>▣</b><span>Situação</span></button><button data-order-pane="tracking"><b>⌖</b><span>Acompanhamento</span></button><button data-order-pane="modem"><b>◉</b><span>Modem</span></button><button data-order-pane="disconnects"><b>⌁</b><span>Quedas</span></button><button data-order-pane="photos"><b>▧</b><span>Fotos</span></button><button data-order-pane="materials"><b>▤</b><span>Materiais</span></button></nav>
       </section>
       <main class="order-panes">
+        ${orderWarnings.length ? `<section class="card order-load-warning" role="status"><strong>Algumas informações ficaram indisponíveis</strong><ul>${orderWarnings.map(warning => `<li>${esc(warning)}</li>`).join("")}</ul><button class="secondary" id="retry-order-details">Tentar carregar novamente</button></section>` : ""}
         <section data-pane="summary">
           <section class="order-glance"><article><small>CLIENTE</small><b>${esc(order.cliente || "Não informado")}</b></article><article><small>OS / SERVIÇO</small><b>#${esc(order.os_id)} · ${esc(order.os_motivo_descricao || "Atendimento")}</b></article><article class="${online ? "online" : "offline"}"><small>CONEXÃO</small><b>${online ? "● Online" : "● Offline"}</b></article><article><small>SINAL DA FIBRA</small><b>${signal != null && signal !== "" ? `${esc(signal)} dBm` : "Sem leitura"}</b></article></section>
           <section class="card service-request"><small>O QUE O TÉCNICO PRECISA FAZER</small><h2>${esc(order.os_motivo_descricao || "Atendimento")}</h2><p>${esc(detailValue(order, ["os_conteudo", "conteudo", "os_relato", "relato", "descricao"]))}</p></section>
@@ -1835,6 +1800,7 @@ async function technicianOrderDetail(orderId) {
         <section data-pane="photos" class="hidden"><section class="card photo-section"><div class="photo-section-head"><div><h2>Fotos (${photos.length})</h2><p class="muted">Depois do envio, a foto fica salva diretamente na OS do SGP.</p></div>${closed ? "" : '<button id="add-photo-order" class="primary">＋ Anexar foto</button>'}</div>${photos.length ? `<div class="order-photo-grid">${photos.map((photo, index) => { const photoId = photo.id || photo.imagem_id || photo.anexo_id; const description = photo.descricao || photo.description || `Foto ${index + 1}`; const src = `/api/technician/orders/${orderId}/photos/${encodeURIComponent(photoId)}`; return photoId ? `<button class="order-photo" type="button" data-photo-src="${src}" data-photo-title="${esc(description)}"><img src="${src}" alt="${esc(description)}" loading="lazy"><span>${esc(description)}</span><small>Salva no SGP · clique para ampliar</small></button>` : `<div class="order-photo unavailable"><span>${esc(description)}</span><small>Imagem indisponível</small></div>`; }).join("")}</div>` : '<div class="order-empty-state"><b>SEM FOTOS</b><span>Use o botão acima para fotografar ou escolher uma imagem.</span></div>'}</section></section>
         <section data-pane="materials" class="hidden"><section class="card"><h2>Material usado</h2><p class="muted">Escolha como o material será lançado. O saldo só será consultado depois do clique.</p>${closed ? "" : '<div class="material-mode-actions"><button id="add-loan-material" class="primary">Comodato</button><button id="add-kit-material" class="primary">Kit de instalação</button></div>'}<div class="material-history"><h3>Lançados nesta OS (${materials.length})</h3>${materials.map(item => `<p class="used-line"><span>${esc(item.produto || "Material")} ${item.referencia ? `· ${esc(item.referencia)}` : ""}</span><b>${number(item.quantidade)}</b></p>`).join("") || '<p>Nenhum material lançado.</p>'}</div></section></section>
       </main>`;
+    $("#retry-order-details")?.addEventListener("click", () => technicianOrderDetail(orderId, true));
     if (supervisor) {
       $(".order-status-form").innerHTML = `<small>SITUAÇÃO DA OS</small><h2>Análise do atendimento</h2><div class="closed-order-note">Visualização do supervisor · ${esc(order.os_status_txt || "Situação não informada")}</div><p>${esc(order.os_servicoprestado || "Serviço prestado ainda não informado.")}</p>`;
       ["#unlink-onu", "#link-onu", "#add-photo-order", "#add-loan-material", "#add-kit-material"].forEach(selector => $(selector)?.remove());
@@ -2275,7 +2241,7 @@ async function verifyCto(event) {
   const submit = event.currentTarget.querySelector('button[type="submit"], button.primary');
   if (submit) { submit.disabled = true; submit.textContent = "Consultando..."; }
   const resultBox = $("#cto-results");
-  resultBox.innerHTML = '<section class="loading inline"><img src="/sgfibra-logo.png" alt="SG Fibra"><span>Consultando contratos uma única vez...</span></section>';
+  resultBox.innerHTML = '<section class="loading inline"><span class="loading-indicator" aria-hidden="true"></span><span>Consultando contratos uma única vez...</span></section>';
   try {
     const result = await api(`/api/cto/verify?contracts=${encodeURIComponent(ids.join(","))}`);
     resultBox.innerHTML = ctoResult(result);
@@ -4148,7 +4114,7 @@ function routeMonitorRender(data) {
       <div id="route-monitor-live">
       <section class="hero"><div><small>MONITORAMENTO DE SERVIÇOS</small><h1>Acompanhar rota</h1><p>Atualização automática e silenciosa a cada minuto.</p></div><b>◷</b></section>
       <section class="route-metrics"><article class="card"><small>OS DO DIA</small><b id="route-total">${number(data.total_orders)}</b></article><article class="card"><small>EM EXECUÇÃO</small><b id="route-running">${number(running)}</b></article><article class="card"><small>ENCERRADAS</small><b id="route-closed">${number(closed)}</b></article><article id="route-alert-card" class="card ${alerts ? "has-alert" : ""}"><small>PRECISAM DE ANÁLISE</small><b id="route-alert-count">${number(alerts)}</b></article></section>
-      <section class="section-title route-title"><div><h2>Equipe técnica</h2><span id="route-updated">Atualizado em ${updated}</span></div><a class="secondary button-link" href="#mapa-servicos">Mapa e serviços sem técnico</a></section>
+      <section class="section-title route-title"><div><h2>Equipe técnica</h2><span id="route-updated">Atualizado em ${updated}</span></div><div class="route-title-actions"><button id="refresh-route-monitor" class="secondary">Atualizar agora</button><a class="secondary button-link" href="#mapa-servicos">Mapa e serviços sem técnico</a></div></section>
       <div id="route-sticky-hours" class="route-timeline-sticky"><div class="route-timeline-header"><strong>Responsável</strong><div class="route-hours">${routeHourHeader()}</div></div></div>
       <div id="route-timeline-scroll" class="route-timeline-wrap"><div class="route-timeline">${rows.map((item, index) => `<section class="route-lane" data-route-tech="${index}"><div class="route-person"><strong>${esc(item.technician)}</strong><small>${item.counts?.total || 0} OS no dia</small></div><div class="route-track">${routeTrackMarkup(item, data)}</div></section>`).join("")}</div></div>
       <p class="route-note"><b>Regras:</b> acima de 1 hora fica em atenção; acima de 2 horas fica urgente. Marcador curto indica OS encerrada sem início registrado. Vermelho transparente indica que uma nova OS começou antes da anterior terminar.</p>
@@ -4157,6 +4123,7 @@ function routeMonitorRender(data) {
     bindRouteOrderLinks(document);
     bindRouteReviews(document);
     bindRouteTimelineScroll();
+    $("#refresh-route-monitor").onclick = () => routeMonitorView(true);
     return;
   }
   $("#route-total").textContent = number(data.total_orders);
@@ -4184,8 +4151,6 @@ function routeMonitorStartRefresh() {
   if (routeMonitorRefreshTimer) window.clearInterval(routeMonitorRefreshTimer);
   routeMonitorRefreshTimer = window.setInterval(async () => {
     if (routeMonitorRefreshing || document.querySelector('.assignment-dialog') || !location.hash.startsWith("#acompanhar-rota")) return;
-    const saoPauloHour = Number(new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", hour12: false, timeZone: "America/Sao_Paulo" }).format(new Date()));
-    if (saoPauloHour < 8 || saoPauloHour >= 19) return;
     routeMonitorRefreshing = true;
     try {
       const data = await api("/api/superadmin/route-monitor?refresh=1", { timeoutMs: 70000 });
@@ -4217,7 +4182,7 @@ async function routeMonitorView(force = false) {
   } catch (error) { errorView(error); }
 }
 
-const routes = { "historico-logistica": () => logisticsAuditView(), "puxar-rompimento": ruptureTriageView, "pendencias-estoque": logisticsCasesView, "monitor-materiais": materialMonitorView, home: homeView, rota: routeFolderView, estoque: inventoryFolderView, "saldo-estoque": inventoryBalanceView, "conferencia-saldo": stockReconciliationView, "conferir-gpon": inventoryGponView, "comprar-modem": modemPurchaseView, relatorios: reportsView, "materiais-usados": materialUsageView, "analise-os": modemExchangeView, "acompanhar-rota": routeMonitorView, "acompanhamento-instalacoes": supervisorVisitTrackingView, "mapa-servicos": openServiceMapView, "mapa-atendimento": serviceCoverageView, "mapa-pon": serviceCoverageView, "saude-pons": ponHealthView, "vincular-modem": onuLinkView, "procurar-modem": modemSearchView, "modem-lancado": launchedModemView, "jogar-retirada": withdrawalDispatchView, "resumo-semanal": weeklySummaryView, pontuacao: scoreView, retiradas: removalsView, cto: ctoView, acessos: accessView };
+const routes = { "historico-logistica": () => logisticsAuditView(), "puxar-rompimento": ruptureTriageView, "pendencias-estoque": logisticsCasesView, "monitor-materiais": materialMonitorView, home: homeView, rota: routeFolderView, estoque: inventoryFolderView, "saldo-estoque": inventoryBalanceView, "conferencia-saldo": stockReconciliationView, "conferir-gpon": inventoryGponView, "comprar-modem": modemPurchaseView, relatorios: reportsView, "materiais-usados": materialUsageView, "analise-os": modemExchangeView, "acompanhar-rota": routeMonitorView, "acompanhamento-instalacoes": supervisorVisitTrackingView, "mapa-servicos": openServiceMapView, "mapa-atendimento": serviceCoverageView, "mapa-pon": serviceCoverageView, "saude-pons": ponHealthView, "vincular-modem": onuLinkView, "procurar-modem": modemSearchView, "modem-lancado": launchedModemView, "resumo-semanal": weeklySummaryView, pontuacao: scoreView, cto: ctoView, acessos: accessView };
 
 routes.tutoriais = tutorialsView;
 async function route() {
@@ -4226,7 +4191,7 @@ async function route() {
   const [name, id] = raw.split("/");
   if (name === 'pontuacao' && state.user.mode !== 'superadmin') { location.hash = 'home'; return; }
   if (name === 'voip' && !['superadmin','office','admin'].includes(state.user.mode)) { location.hash = 'home'; return; }
-  if (["office", "admin"].includes(state.user.mode) && !["home", "rota", "puxar-rompimento", "acompanhar-rota", "mapa-servicos", "mapa-atendimento", "mapa-pon", "saude-pons", "vincular-modem", "procurar-modem", "jogar-retirada", "cto", "ordem", "tutoriais", "voip"].includes(name)) {
+  if (["office", "admin"].includes(state.user.mode) && !["home", "rota", "puxar-rompimento", "acompanhar-rota", "mapa-servicos", "mapa-atendimento", "mapa-pon", "saude-pons", "vincular-modem", "procurar-modem", "cto", "ordem", "tutoriais", "voip"].includes(name)) {
     location.hash = "home";
     return;
   }
@@ -4238,11 +4203,9 @@ async function route() {
   if (name !== "mapa-atendimento" && name !== "mapa-pon") coverageMapStop();
   if (name !== "saude-pons") ponHealthStop();
   if (name !== "cto") stopPonObservation();
-  if (name === "retiradas" && id === "consultas") return removalConsultationView();
+  if (name === "retiradas" || name === "jogar-retirada") { location.hash = "home"; return; }
   if (name === "alertas-estoque") return stockAlertsView(id);
   if (name === "meus-materiais") return personalStock();
-  if (name === "retiradas" && id === "manual") return removalManualView();
-  if (name === "retiradas" && id === "pendencias") return removalPendingView();
   if (name === "cto" && id === "consulta") return ctoConsultationView();
   if (name === "cto" && id === "historico") return ctoHistoryView();
   if (name === "ordens") return id ? technicianOrdersView(id) : technicianOrdersLanding();

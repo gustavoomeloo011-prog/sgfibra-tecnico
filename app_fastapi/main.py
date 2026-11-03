@@ -1049,22 +1049,93 @@ async def technician_order(order_id: int, request: Request, context=Depends(sess
     if mode not in ("technician", "office", "superadmin"):
         raise SGPError("Acesso permitido para técnicos, escritório e supervisores.", 403)
     def load(client: SGPClient, session: dict[str, Any]):
-        order = client.order(order_id, include_onu=True, include_signal_context=False)
-        if not order or (mode == "technician" and not technician_owns_order(order, session)):
+        warnings: list[str] = []
+        try:
+            order = client.order(order_id, include_onu=False, include_signal_context=False)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Primary SGP order lookup failed for OS %s (%s)", order_id, type(exc).__name__,
+            )
+            order = None
+        if not order:
+            # The SGP detail endpoint can intermittently fail while its daily
+            # operational list is still available. Use that row to keep the OS
+            # usable (tracking, chat and status actions) with partial details.
+            try:
+                order = next(
+                    (item for item in client.route_monitor_orders()
+                     if str(item.get("os_id") or item.get("id") or "") == str(order_id)),
+                    None,
+                )
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "SGP route-list fallback failed for OS %s (%s)", order_id, type(exc).__name__,
+                )
+                order = None
+            if order:
+                order.setdefault("os_id", order.get("id") or order_id)
+                order.setdefault("os_status", order.get("status_id", 0))
+                order.setdefault("os_status_txt", order.get("status"))
+                order.setdefault("os_tecnico_responsavel", order.get("responsavel"))
+                order.setdefault("os_tecnicos_auxiliares", order.get("tecnicos_auxiliares") or [])
+                order.setdefault("os_motivo_descricao", order.get("motivo"))
+                order.setdefault("os_conteudo", order.get("conteudo"))
+                order.setdefault("os_data_agendamento", order.get("data_agendamento"))
+                order.setdefault("os_data_finalizacao", order.get("data_finalizacao"))
+                warnings.append("O SGP não carregou os detalhes completos da OS; exibimos os dados operacionais disponíveis.")
+        if not order:
+            raise SGPError("O SGP não retornou esta OS. Atualize a lista e tente novamente.", 502)
+        if mode == "technician" and not technician_owns_order(order, session):
             raise SGPError("Esta OS não pertence à sua rota de hoje.", 403)
+        try:
+            order["onu"] = client.onu_for_service(order.get("servico_id"), order.get("servico_login"))
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "ONU lookup failed for OS %s (%s)", order_id, type(exc).__name__,
+            )
+            order["onu"] = None
+            warnings.append("Não foi possível carregar os dados do modem nesta consulta.")
+        try:
+            materials = client.order_materials(order_id)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "OS materials lookup failed for OS %s (%s)", order_id, type(exc).__name__,
+            )
+            materials = []
+            warnings.append("Não foi possível consultar os materiais lançados nesta OS.")
+        try:
+            photos = client.order_photos(order_id)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "OS photos lookup failed for OS %s (%s)", order_id, type(exc).__name__,
+            )
+            photos = []
+            warnings.append("Não foi possível carregar as fotos desta OS.")
         return {
             "order": order,
-            "materials": client.order_materials(order_id),
-            "photos": client.order_photos(order_id),
+            "materials": materials,
+            "photos": photos,
+            "warnings": warnings,
         }
     payload = await cached(
-        context[1], f"order-detail-v1:{order_id}", 120,
+        context[1], f"order-detail-v2:{order_id}", 120,
         lambda: load(context[2], context[1]),
-        force=request.query_params.get("refresh") == "1", stale_ttl=900, persistent_ttl=86400,
+        force=request.query_params.get("refresh") == "1", stale_ttl=120, persistent_ttl=120,
     )
+    warnings = list(payload.get("warnings") or [])
+    draft = None
+    if mode == "technician":
+        try:
+            draft = await run_sync(lambda: postgres_operations.order_text_draft(order_id, session_username(context[1])))
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "OS draft lookup failed for OS %s (%s)", order_id, type(exc).__name__,
+            )
+            warnings.append("O rascunho salvo não pôde ser carregado.")
     return {
         **payload,
-        "draft": await run_sync(lambda: postgres_operations.order_text_draft(order_id, session_username(context[1]))) if mode == "technician" else None,
+        "warnings": list(dict.fromkeys(warnings)),
+        "draft": draft,
     }
 
 
@@ -1130,7 +1201,7 @@ async def technician_order_onu_label(order_id: int, request: Request, context=De
         raise SGPError("Configure a credencial central do SGP no servidor.", 503)
     result = await run_sync(lambda: central.update_onu_label(onu_id, label, vlan))
     await invalidate_cached(context[1], f"technical-info-v1:{order_id}")
-    await invalidate_cached(context[1], f"order-detail-v1:{order_id}")
+    await invalidate_cached(context[1], f"order-detail-v2:{order_id}")
     return {"ok": True, "result": result}
 
 
@@ -1217,7 +1288,7 @@ async def technician_order_status(order_id: int, request: Request, context=Depen
     await run_sync(lambda: postgres_operations.delete_order_text_draft(order_id, session_username(context[1])))
     await invalidate_cached(context[1], "orders-today:")
     await invalidate_cached(context[1], "technician-score")
-    await invalidate_cached(context[1], f"order-detail-v1:{order_id}")
+    await invalidate_cached(context[1], f"order-detail-v2:{order_id}")
     return {"ok": True, "result": result, "tracking_warning": tracking_warning}
 
 
@@ -1456,7 +1527,7 @@ async def technician_order_materials(order_id: int, request: Request, context=De
     finally:
         await stock_mutation_finished()
     await invalidate_cached(context[1], "stock")
-    await invalidate_cached(context[1], f"order-detail-v1:{order_id}")
+    await invalidate_cached(context[1], f"order-detail-v2:{order_id}")
     return {"ok": True, "result": result}
 
 
@@ -1474,7 +1545,7 @@ async def technician_order_photo(order_id: int, request: Request, context=Depend
             str(body.get("data") or ""),
         )
     result = await call_context(context, upload)
-    await invalidate_cached(context[1], f"order-detail-v1:{order_id}")
+    await invalidate_cached(context[1], f"order-detail-v2:{order_id}")
     return {"ok": True, "result": result}
 
 
@@ -1561,8 +1632,12 @@ async def office_itinerary(request: Request, context=Depends(session_context)):
     require_office_tools(context[1])
     technician = str(request.query_params.get("technician") or "").strip()
     members = await run_sync(route_monitor_members)
-    allowed = {str(m.get("display_name") or m.get("username") or "").strip() for m in members}
-    if not technician or technician not in allowed:
+    allowed = [str(m.get("display_name") or m.get("username") or "").strip() for m in members]
+    orders = await run_sync(context[2].route_monitor_orders)
+    for order in orders:
+        allowed.append(str(order.get("os_tecnico_responsavel") or order.get("responsavel") or "").strip())
+        allowed.extend(str(name or "").strip() for name in (order.get("os_tecnicos_auxiliares") or order.get("tecnicos_auxiliares") or []))
+    if not technician or not any(_same_person(technician, name) for name in allowed if name):
         raise HTTPException(400, "Selecione um técnico do mapa.")
     day = _business_today()
     key = hashlib.sha256(technician.encode()).hexdigest()[:20]
@@ -1883,7 +1958,7 @@ async def technician_authorize_onu(olt_id: int, request: Request, context=Depend
             raise SGPError("O contrato informado não pertence a esta OS.", 400)
         return client.authorize_onu(olt_id, body)
     result = await call_context(context, authorize)
-    await invalidate_cached(context[1], f"order-detail-v1:{order_id}")
+    await invalidate_cached(context[1], f"order-detail-v2:{order_id}")
     return {"ok": True, "result": result}
 
 
@@ -1905,7 +1980,7 @@ async def technician_deauthorize_onu(identifier: str, request: Request, context=
             raise SGPError("Esta ONU não está vinculada à OS informada.", 409)
         return client.deauthorize_onu(identifier)
     result = await call_context(context, deauthorize)
-    await invalidate_cached(context[1], f"order-detail-v1:{order_id}")
+    await invalidate_cached(context[1], f"order-detail-v2:{order_id}")
     return {"ok": True, "result": result}
 
 
@@ -3204,20 +3279,39 @@ async def superadmin_users(context=Depends(session_context)):
 async def route_monitor(request: Request, context=Depends(session_context)):
     """Load today's route once and summarize it for supervisors."""
     require_office_tools(context[1])
-    sao_paulo_hour = datetime.now(ZoneInfo("America/Sao_Paulo")).hour
-    automatic_window = 8 <= sao_paulo_hour < 19
-    force = request.query_params.get("refresh") == "1" and automatic_window
     member_rows = await run_sync(route_monitor_members)
-    technicians = tuple(str(item.get("display_name") or item.get("username") or "").strip() for item in member_rows)
-    technicians = tuple(name for name in technicians if name)
+    registered_users = await run_sync(platform_users)
+    configured_names = [str(item.get("display_name") or item.get("username") or "").strip() for item in member_rows]
+    configured_names.extend(
+        str(item.get("name") or item.get("username") or "").strip()
+        for item in registered_users if str(item.get("role") or "") == "technician"
+    )
+
+    def unique_names(names):
+        values, seen = [], set()
+        for raw_name in names:
+            name = str(raw_name or "").strip()
+            key = re.sub(r"[^a-z0-9]", "", _normalized(name))
+            if not name or not key or key in {"semtecnico", "naoidentificado"} or key in seen:
+                continue
+            seen.add(key)
+            values.append(name)
+        return tuple(values)
+
+    technicians = unique_names(configured_names)
     def load_route():
         orders = context[2].route_monitor_orders()
+        assigned_names = []
+        for order in orders:
+            assigned_names.append(order.get("os_tecnico_responsavel") or order.get("responsavel"))
+            assigned_names.extend(order.get("os_tecnicos_auxiliares") or order.get("tecnicos_auxiliares") or [])
+        active_technicians = unique_names([*technicians, *assigned_names])
         service_day = _business_today().isoformat()
         cache_day = f"{service_day}:v2"
         candidates = [
             int(order.get("os_id") or 0) for order in orders
             if int(order.get("os_status") or 0) in (1, 2)
-            and any(_same_person(order.get("os_tecnico_responsavel"), name) for name in technicians)
+            and any(_same_person(order.get("os_tecnico_responsavel"), name) for name in active_technicians)
         ]
         saved = route_service_times(cache_day, candidates)
         candidate_ids = set(candidates)
@@ -3233,21 +3327,21 @@ async def route_monitor(request: Request, context=Depends(session_context)):
             )
         ]
         if refresh:
-            found = context[2].route_monitor_start_times(refresh, technicians=technicians)
+            found = context[2].route_monitor_start_times(refresh, technicians=active_technicians)
             save_route_service_times(cache_day, found)
             saved.update({order_id: started_at for order_id, (_client_id, started_at) in found.items()})
         for order in orders:
             started_at = saved.get(int(order.get("os_id") or 0))
             if started_at:
                 order["checkin_data"] = started_at
-        result = build_route_monitor(orders, technicians=technicians)
-        result["map_points"] = context[2].route_monitor_positions(orders, technicians=technicians)
+        result = build_route_monitor(orders, technicians=active_technicians)
+        result["map_points"] = context[2].route_monitor_positions(orders, technicians=active_technicians)
         return result
 
     result = await cached(
-        context[1], "route-monitor-v2:" + hashlib.sha1("|".join(technicians).encode()).hexdigest()[:10], 45 if automatic_window else 86400,
+        context[1], "route-monitor-v3:" + hashlib.sha1("|".join(technicians).encode()).hexdigest()[:10], 45,
         load_route,
-        force=force, stale_ttl=180,
+        force=request.query_params.get("refresh") == "1", stale_ttl=180,
     )
     service_day = str(result.get("date") or _business_today().isoformat())
     reviews = await run_sync(lambda: route_alert_reviews(service_day))
