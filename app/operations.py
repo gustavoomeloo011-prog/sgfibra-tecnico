@@ -86,6 +86,7 @@ def _initialize_db() -> None:
               CREATE INDEX IF NOT EXISTS idx_completed_closed_at ON completed_orders(closed_at);
               CREATE INDEX IF NOT EXISTS idx_removals_closed_at ON confirmed_removals(closed_at);
               INSERT OR IGNORE INTO platform_roles(username,role,granted_by,updated_at) VALUES('Gustavo','superadmin','Sistema',0);
+              INSERT OR IGNORE INTO platform_roles(username,role,granted_by,updated_at) VALUES('GON','superadmin','Sistema',0);
               INSERT OR IGNORE INTO platform_roles(username,role,granted_by,updated_at) VALUES('Kaionunes','admin','Gustavo',0);
               INSERT OR IGNORE INTO platform_roles(username,role,granted_by,updated_at) VALUES('DavidR','technician','Sistema',0);
               INSERT OR IGNORE INTO platform_roles(username,role,granted_by,updated_at) SELECT username,'technician','Migração',0 FROM platform_users;
