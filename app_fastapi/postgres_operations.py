@@ -265,7 +265,26 @@ def delete_coverage_building(building_id: int) -> None:
 
 
 def tracking_session(token_hash: str) -> dict[str, Any] | None:
-    return cache_snapshot(f"os-tracking-v1:{token_hash}", None, 14 * 86400)
+    row = _one(
+        "SELECT value_json,expires_at FROM persistent_cache WHERE cache_key=%s",
+        (f"os-tracking-v1:{token_hash}",),
+    )
+    if not row or float(row["expires_at"]) <= time.time():
+        return None
+    return decrypted_json(row["value_json"])
+
+
+def tracking_sessions() -> list[dict[str, Any]]:
+    rows = _rows(
+        "SELECT value_json FROM persistent_cache WHERE cache_key LIKE 'os-tracking-v1:%%' AND expires_at>%s ORDER BY saved_at DESC LIMIT 500",
+        (time.time(),),
+    )
+    result = []
+    for row in rows:
+        value = decrypted_json(row["value_json"])
+        if isinstance(value, dict) and value.get("order_id"):
+            result.append(value)
+    return result
 
 
 def tracking_session_for_order(order_id: int) -> dict[str, Any] | None:
@@ -1019,7 +1038,7 @@ def configure_operations(_attempt=0) -> bool:
         "cache_snapshot","save_cache_snapshot","delete_cache_snapshots_except","delete_cache_snapshots_prefix","route_alert_reviews","save_route_alert_review",
         "coverage_buildings","save_coverage_building","delete_coverage_building",
         "coverage_pon_areas","save_coverage_pon_area","delete_coverage_pon_area",
-        "tracking_session","tracking_session_for_order","save_tracking_session","delete_tracking_session",
+        "tracking_session","tracking_sessions","tracking_session_for_order","save_tracking_session","delete_tracking_session",
         "completed_between","save_location","assign","assignments_for","snapshot",
     ):
         setattr(operations, name, globals()[name])

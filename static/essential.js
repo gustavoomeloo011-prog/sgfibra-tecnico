@@ -567,7 +567,28 @@ async function materialUsageView(period = "day", selectedDate = localDateValue()
 function routeFolderView() {
   if (!["superadmin", "office"].includes(state.user?.mode)) return homeView();
   setPage("Rota");
-  $("#content").innerHTML = `<section class="hero"><div><small>OPERAÇÃO EM CAMPO</small><h1>Rota</h1><p>Escolha a ferramenta que deseja abrir.</p></div><b>◷</b></section><section class="folder-grid"><a class="card folder-card" href="#acompanhar-rota"><b>1</b><h2>Acompanhar rota</h2><p>Veja a agenda, o tempo em atendimento e as notificações dos técnicos.</p></a><a class="card folder-card" href="#mapa-servicos"><b>2</b><h2>Mapa de serviços</h2><p>Compare a posição dos técnicos com as ocorrências abertas do dia.</p></a><a class="card folder-card" href="#jogar-retirada"><b>3</b><h2>Jogar retirada</h2><p>Consulte clientes elegíveis e encaminhe a retirada ao técnico.</p></a><a class="card folder-card" href="#puxar-rompimento"><b>4</b><h2>Puxar rompimento</h2><p>Selecione OLT, Slot e PON e quantifique os clientes online e offline.</p></a></section>`;
+  const visitCard=state.user?.mode==="superadmin"?`<a class="card folder-card" href="#acompanhamento-instalacoes"><b>5</b><h2>Acompanhamento das instalações</h2><p>Veja deslocamentos, mensagens do cliente e endereços IP registrados.</p></a>`:"";
+  $("#content").innerHTML = `<section class="hero"><div><small>OPERAÇÃO EM CAMPO</small><h1>Rota</h1><p>Escolha a ferramenta que deseja abrir.</p></div><b>◷</b></section><section class="folder-grid"><a class="card folder-card" href="#acompanhar-rota"><b>1</b><h2>Acompanhar rota</h2><p>Veja a agenda, o tempo em atendimento e as notificações dos técnicos.</p></a><a class="card folder-card" href="#mapa-servicos"><b>2</b><h2>Mapa de serviços</h2><p>Compare a posição dos técnicos com as ocorrências abertas do dia.</p></a><a class="card folder-card" href="#jogar-retirada"><b>3</b><h2>Jogar retirada</h2><p>Consulte clientes elegíveis e encaminhe a retirada ao técnico.</p></a><a class="card folder-card" href="#puxar-rompimento"><b>4</b><h2>Puxar rompimento</h2><p>Selecione OLT, Slot e PON e quantifique os clientes online e offline.</p></a>${visitCard}</section>`;
+}
+
+let supervisorVisitTrackingTimer=null;
+function supervisorVisitTrackingStop(){if(supervisorVisitTrackingTimer)clearInterval(supervisorVisitTrackingTimer);supervisorVisitTrackingTimer=null;}
+async function supervisorVisitTrackingView(){
+  supervisorVisitTrackingStop();
+  if(state.user?.mode!=="superadmin")return homeView();
+  setPage("Acompanhamento das instalações");
+  const load=async()=>{
+    const root=$("#visit-tracking-results");if(!root)return;
+    try{
+      const data=await api("/api/superadmin/visit-tracking",{timeoutMs:20000});
+      const sessions=data.sessions||[],active=sessions.filter(item=>item.state==="traveling"),arrived=sessions.filter(item=>item.state==="arrived");
+      const label={ready:"Aguardando GPS",traveling:"Em deslocamento",arrived:"Chegou ao endereço",finished:"Atendimento encerrado",paused:"Pausado",cancelled:"Revogado"};
+      root.innerHTML=`<section class="metrics"><article class="card"><small>DESLOCAMENTOS ATIVOS</small><b>${active.length}</b></article><article class="card"><small>CHEGADAS</small><b>${arrived.length}</b></article><article class="card"><small>VISITAS NO HISTÓRICO</small><b>${sessions.length}</b></article></section><section class="visit-tracking-list">${sessions.map(item=>`<article class="card visit-tracking-card"><header><div><small>OS #${number(item.order_id)} · ${esc(item.technician||"Técnico")}</small><h2>${esc(item.client||"Cliente")}</h2></div><b class="visit-state ${esc(item.state)}">${esc(label[item.state]||item.state)}</b></header><p class="muted">Iniciado ${item.created_at?new Date(item.created_at*1000).toLocaleString("pt-BR"):"—"}${item.arrived_at?` · Chegada ${new Date(item.arrived_at*1000).toLocaleString("pt-BR")}`:""}</p>${item.location?`<p><strong>Última posição:</strong> ${Number(item.location.latitude).toFixed(5)}, ${Number(item.location.longitude).toFixed(5)} · ${new Date(item.location.updated_at*1000).toLocaleTimeString("pt-BR")}</p>`:`<p class="muted">Sem localização recente compartilhada.</p>`}<h3>Mensagens e IP de origem</h3><div class="visit-message-list">${(item.messages||[]).map(message=>`<article><header><b>${esc(message.side==="client"?"Cliente":"Técnico")}</b><time>${message.created_at?new Date(message.created_at*1000).toLocaleString("pt-BR"):"—"}</time></header><p>${esc(message.text||"")}</p><small>IP público registrado: ${esc(message.ip||"Não disponível (mensagem antiga ou IP não informado pelo proxy)")}</small></article>`).join("")||'<p class="muted">Nenhuma mensagem nesta visita.</p>'}</div></article>`).join("")||'<article class="card empty">Nenhum acompanhamento de instalação ativo ou recente.</article>'}<p class="muted">Mensagens e endereços IP ficam disponíveis durante o prazo temporário da visita. Atualização automática a cada 10 segundos. O IP público pode ser compartilhado por vários usuários (NAT).</p></section>`;
+    }catch(error){root.innerHTML=`<article class="card empty error">Não foi possível carregar os acompanhamentos: ${esc(error.message)}</article>`;}
+  };
+  $("#content").innerHTML=`<section class="section-title"><div><small>SUPERVISÃO</small><h1>Acompanhamento das instalações</h1><p>Leia o andamento e o chat das visitas. Esta tela é somente para supervisores.</p></div><button id="refresh-visit-tracking" class="secondary">Atualizar</button></section><div id="visit-tracking-results" class="loading">Carregando visitas…</div>`;
+  $("#refresh-visit-tracking").onclick=load;
+  await load();supervisorVisitTrackingTimer=setInterval(()=>{if(location.hash.startsWith("#acompanhamento-instalacoes"))load();},10000);
 }
 
 async function inventoryFolderView() {
@@ -4196,7 +4217,7 @@ async function routeMonitorView(force = false) {
   } catch (error) { errorView(error); }
 }
 
-const routes = { "historico-logistica": () => logisticsAuditView(), "puxar-rompimento": ruptureTriageView, "pendencias-estoque": logisticsCasesView, "monitor-materiais": materialMonitorView, home: homeView, rota: routeFolderView, estoque: inventoryFolderView, "saldo-estoque": inventoryBalanceView, "conferencia-saldo": stockReconciliationView, "conferir-gpon": inventoryGponView, "comprar-modem": modemPurchaseView, relatorios: reportsView, "materiais-usados": materialUsageView, "analise-os": modemExchangeView, "acompanhar-rota": routeMonitorView, "mapa-servicos": openServiceMapView, "mapa-atendimento": serviceCoverageView, "mapa-pon": serviceCoverageView, "saude-pons": ponHealthView, "vincular-modem": onuLinkView, "procurar-modem": modemSearchView, "modem-lancado": launchedModemView, "jogar-retirada": withdrawalDispatchView, "resumo-semanal": weeklySummaryView, pontuacao: scoreView, retiradas: removalsView, cto: ctoView, acessos: accessView };
+const routes = { "historico-logistica": () => logisticsAuditView(), "puxar-rompimento": ruptureTriageView, "pendencias-estoque": logisticsCasesView, "monitor-materiais": materialMonitorView, home: homeView, rota: routeFolderView, estoque: inventoryFolderView, "saldo-estoque": inventoryBalanceView, "conferencia-saldo": stockReconciliationView, "conferir-gpon": inventoryGponView, "comprar-modem": modemPurchaseView, relatorios: reportsView, "materiais-usados": materialUsageView, "analise-os": modemExchangeView, "acompanhar-rota": routeMonitorView, "acompanhamento-instalacoes": supervisorVisitTrackingView, "mapa-servicos": openServiceMapView, "mapa-atendimento": serviceCoverageView, "mapa-pon": serviceCoverageView, "saude-pons": ponHealthView, "vincular-modem": onuLinkView, "procurar-modem": modemSearchView, "modem-lancado": launchedModemView, "jogar-retirada": withdrawalDispatchView, "resumo-semanal": weeklySummaryView, pontuacao: scoreView, retiradas: removalsView, cto: ctoView, acessos: accessView };
 
 routes.tutoriais = tutorialsView;
 async function route() {
@@ -4210,6 +4231,7 @@ async function route() {
     return;
   }
   if (name !== "acompanhar-rota") { routeMonitorStopClock(); routeMapDestroy(); }
+  if (name !== "acompanhamento-instalacoes") supervisorVisitTrackingStop();
   if (name !== "monitor-materiais") materialMonitorStop();
   if (name !== "estoque") stockDashboardStop();
   if (name !== "mapa-servicos") openServiceMapStop();

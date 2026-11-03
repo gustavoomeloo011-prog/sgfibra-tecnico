@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -1238,6 +1239,31 @@ async def technician_order_tracking(order_id: int, context=Depends(session_conte
             "expires_at": session.get("expires_at")}
 
 
+@app.get("/api/superadmin/visit-tracking")
+async def superadmin_visit_tracking(context=Depends(session_context)):
+    require_superadmin_session(context[1])
+    now = time.time()
+    sessions = await run_sync(postgres_operations.tracking_sessions)
+    visible = []
+    for session in sessions:
+        if float(session.get("expires_at") or 0) <= now:
+            continue
+        state = str(session.get("state") or "unknown")
+        location = session.get("last_location")
+        if state != "traveling" or not location or now - float(location.get("updated_at") or 0) > 90:
+            location = None
+        visible.append({
+            "order_id": session.get("order_id"), "client": session.get("client"),
+            "technician": session.get("technician"), "state": state,
+            "created_at": session.get("created_at"), "arrived_at": session.get("arrived_at"),
+            "expires_at": session.get("expires_at"), "location": location,
+            "messages": [{key: message.get(key) for key in ("side", "author", "text", "created_at", "ip")}
+                         for message in session.get("messages", []) if isinstance(message, dict)],
+        })
+    visible.sort(key=lambda item: float(item.get("created_at") or 0), reverse=True)
+    return {"sessions": visible[:200], "captured_at": now, "refresh_seconds": 10}
+
+
 @app.post("/api/technician/orders/{order_id}/tracking/start")
 async def technician_start_order_tracking(order_id: int, request: Request, context=Depends(session_context)):
     require_technician(context[1])
@@ -1332,7 +1358,7 @@ async def public_order_tracking_message(token: str, request: Request):
         if exc.status_code != 404:
             raise
         raise HTTPException(410, "Chat indisponível para este link antigo.")
-    return await _post_tracking_message(session, "Cliente", body.get("text"), "client")
+    return await _post_tracking_message(session, "Cliente", body.get("text"), "client", _tracking_request_ip(request))
 
 
 async def _legacy_public_tracking_payload(token: str):
@@ -1354,7 +1380,19 @@ async def _legacy_public_tracking_payload(token: str):
             "expires_at": tracking["expires_at"], "messages": [], "chat_open": False}
 
 
-async def _post_tracking_message(session: dict[str, Any], author: str, text_value: str, side: str):
+def _tracking_request_ip(request: Request) -> str | None:
+    # Render terminates the public connection before forwarding to the app.
+    # Its X-Forwarded-For header carries the client address; accept only a
+    # syntactically valid IP and never persist arbitrary header text.
+    forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    candidate = forwarded or (request.client.host if request.client else "")
+    try:
+        return ipaddress.ip_address(candidate).compressed
+    except ValueError:
+        return None
+
+
+async def _post_tracking_message(session: dict[str, Any], author: str, text_value: str, side: str, ip: str | None = None):
     if session.get("state") != "traveling" or session.get("chat_closed"):
         raise HTTPException(409, "O chat foi encerrado quando o técnico chegou ao endereço.")
     text_value = str(text_value or "").strip()
@@ -1362,7 +1400,7 @@ async def _post_tracking_message(session: dict[str, Any], author: str, text_valu
     messages = session.setdefault("messages", [])
     recent = [m for m in messages if float(m.get("created_at") or 0) > time.time() - 60 and m.get("side") == side]
     if len(recent) >= 10: raise HTTPException(429, "Aguarde antes de enviar novas mensagens.")
-    messages.append({"author": author, "text": text_value, "created_at": time.time(), "side": side})
+    messages.append({"author": author, "text": text_value, "created_at": time.time(), "side": side, "ip": ip})
     session["messages"] = messages[-300:]
     target = "unread_client" if side == "technician" else "unread_technician"
     session[target] = int(session.get(target) or 0) + 1
@@ -1375,7 +1413,7 @@ async def technician_tracking_message(order_id: int, request: Request, context=D
     require_technician(context[1])
     session = await _tracking_for_technician(order_id, context)
     body = await request.json()
-    return await _post_tracking_message(session, _technician_identity(context[1]), body.get("text"), "technician")
+    return await _post_tracking_message(session, _technician_identity(context[1]), body.get("text"), "technician", _tracking_request_ip(request))
 
 
 @app.post("/api/technician/orders/{order_id}/draft")

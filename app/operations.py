@@ -297,7 +297,27 @@ def delete_cache_snapshots_prefix(prefix: str) -> None:
 
 
 def tracking_session(token_hash: str) -> dict[str, Any] | None:
-    return cache_snapshot(f"os-tracking-v1:{token_hash}", None, 14 * 86400)
+    cache_key = f"os-tracking-v1:{token_hash}"
+    with _db() as db:
+        row = db.execute("SELECT value_json,expires_at FROM persistent_cache WHERE cache_key=?", (cache_key,)).fetchone()
+        if not row or float(row["expires_at"]) <= time.time():
+            return None
+        return decrypted_json(row["value_json"])
+
+
+def tracking_sessions() -> list[dict[str, Any]]:
+    now = time.time()
+    with _db() as db:
+        rows = db.execute(
+            "SELECT value_json FROM persistent_cache WHERE cache_key LIKE 'os-tracking-v1:%' AND expires_at>? ORDER BY saved_at DESC LIMIT 500",
+            (now,),
+        ).fetchall()
+    result = []
+    for row in rows:
+        value = decrypted_json(row["value_json"])
+        if isinstance(value, dict) and value.get("order_id"):
+            result.append(value)
+    return result
 
 
 def save_tracking_session(token_hash: str, value: dict[str, Any], retention_seconds: int = 14 * 86400) -> None:
