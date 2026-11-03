@@ -209,6 +209,52 @@ def delete_coverage_building(building_id: int) -> None:
         db.execute("DELETE FROM coverage_buildings WHERE id=?", (int(building_id),))
 
 
+def coverage_pon_areas() -> list[dict[str, Any]]:
+    """Return manually saved PON coverage polygons from the local store."""
+    with _db() as db:
+        rows = [dict(row) for row in db.execute(
+            "SELECT * FROM coverage_pon_areas ORDER BY lower(olt_name),slot,pon,id"
+        )]
+    for row in rows:
+        try:
+            row["geometry"] = json.loads(row.pop("geometry_json"))
+        except (TypeError, ValueError):
+            row["geometry"] = None
+    return rows
+
+
+def save_coverage_pon_area(area_id: int | None, olt_id: str, olt_name: str, slot: str, pon: str, note: str, geometry: Any, actor: str) -> dict[str, Any]:
+    clean_slot, clean_pon = str(slot or "").strip()[:30], str(pon or "").strip()[:30]
+    if not clean_slot or not clean_pon:
+        raise ValueError("Informe o Slot e a PON.")
+    if not isinstance(geometry, dict) or geometry.get("type") != "Polygon":
+        raise ValueError("Desenhe uma área válida no mapa.")
+    coords = geometry.get("coordinates")
+    if not isinstance(coords, (list, tuple)) or not coords or not isinstance(coords[0], (list, tuple)) or len(coords[0]) < 4:
+        raise ValueError("A área precisa ter pelo menos três pontos.")
+    payload = json.dumps(geometry, ensure_ascii=False, separators=(",", ":"))
+    now = time.time()
+    values = (str(olt_id or "").strip()[:80], str(olt_name or "").strip()[:180], clean_slot, clean_pon,
+              str(note or "").strip()[:1000], payload, actor, now)
+    with _db() as db:
+        if area_id:
+            db.execute("UPDATE coverage_pon_areas SET olt_id=?,olt_name=?,slot=?,pon=?,note=?,geometry_json=?,updated_by=?,updated_at=? WHERE id=?", (*values, int(area_id)))
+            row = db.execute("SELECT * FROM coverage_pon_areas WHERE id=?", (int(area_id),)).fetchone()
+        else:
+            cur = db.execute("INSERT INTO coverage_pon_areas(olt_id,olt_name,slot,pon,note,geometry_json,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?)", values)
+            row = db.execute("SELECT * FROM coverage_pon_areas WHERE id=?", (cur.lastrowid,)).fetchone()
+    if not row:
+        raise ValueError("Área não encontrada.")
+    result = dict(row)
+    result["geometry"] = json.loads(result.pop("geometry_json"))
+    return result
+
+
+def delete_coverage_pon_area(area_id: int) -> None:
+    with _db() as db:
+        db.execute("DELETE FROM coverage_pon_areas WHERE id=?", (int(area_id),))
+
+
 def latest_stock_balance_snapshot(location_id: int) -> dict[str, Any] | None:
     with _db() as db:
         row = db.execute(
