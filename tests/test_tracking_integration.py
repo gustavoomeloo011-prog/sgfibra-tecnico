@@ -132,13 +132,27 @@ class TrackingHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(self.customer.post(path + "/verify", headers=device, json={"cpf": "11111111111"}).status_code, 400)
         self.assertEqual(self.customer.post(path + "/verify", headers=device, json={"cpf": "52998224725"}).status_code, 200)
         self.assertEqual(self.customer.get(path, headers=device).json()["status"], "waiting_location")
+        waiting = self.customer.get(path, headers=device).json()
+        self.assertFalse(waiting["chat_open"])
+        self.assertIsNone(waiting["location"])
+        self.assertIsNone(waiting["destination"])
+        self.assertEqual(self.customer.post(path + "/messages", headers=device, json={"text": "Antes"}).status_code, 409)
         self.assertEqual(self.customer.get(path, headers={"X-Tracking-Device": "b" * 48}).json(), {"identity_required": True})
         self.technician()
         self.sgp.status = 2
+        self.assertTrue(self.client.get("/api/technician/orders/461/tracking").json()["chat_open"])
+        running = self.customer.get(path, headers=device).json()
+        self.assertTrue(running["chat_open"])
+        self.assertIsNone(running["location"])
+        self.assertEqual(self.customer.post(path + "/messages", headers=device, json={"text": "Sem GPS"}).status_code, 200)
         started = self.client.post("/api/technician/orders/461/tracking/start", json={"latitude": -23.5, "longitude": -46.6})
         self.assertEqual(started.status_code, 200, started.text)
         self.assertEqual(self.customer.post(path + "/messages", headers=device, json={"text": "Teste local"}).status_code, 200)
         self.assertTrue(self.customer.get(path, headers=device).json()["location"])
+        self.sgp.status = 0
+        self.assertFalse(self.client.get("/api/technician/orders/461/tracking").json()["chat_open"])
+        self.assertIsNone(self.customer.get(path, headers=device).json()["location"])
+        self.assertEqual(self.customer.post(path + "/messages", headers=device, json={"text": "Depois"}).status_code, 409)
 
 
 if __name__ == "__main__":

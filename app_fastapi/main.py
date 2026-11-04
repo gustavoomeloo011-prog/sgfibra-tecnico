@@ -1259,10 +1259,8 @@ async def technician_order_pon_analysis(order_id: int, request: Request, context
         contract_id = int(order.get("contrato_id") or order.get("clientecontrato_id") or 0)
         if not contract_id:
             raise SGPError("O SGP não informou o contrato desta OS.", 422)
-        central = central_sgp_client()
-        if not central:
-            raise SGPError("Configure a credencial central do SGP no servidor.", 503)
-        return central.pon_attenuation(contract_id)
+        client = central_sgp_client() or context[2]
+        return client.pon_attenuation(contract_id, order=order)
 
     return await cached(
         context[1], f"pon-analysis-v2:{order_id}", 300, load,
@@ -1288,6 +1286,10 @@ async def technician_order_status(order_id: int, request: Request, context=Depen
     tracking_warning = None
     if status in (1, 3):
         await _end_order_tracking(order_id, "finished" if status == 1 else "paused")
+    elif status == 0:
+        existing = await run_sync(lambda: operations.tracking_session_for_order(order_id))
+        if existing:
+            await _sync_tracking_order_status(existing, status)
     elif status == 2:
         # Each trip gets a fresh token. Pausing/reopening an OS must not reuse
         # the prior customer's link.
@@ -1318,7 +1320,8 @@ async def technician_order_tracking(order_id: int, request: Request, context=Dep
     return {"state": session.get("state"), "order_id": order_id, "os_status": session.get("os_status"),
             "token": session.get("ready_token") if session.get("state") == "ready" else None,
             "tracking_url": tracking_url, "last_location": session.get("last_location"),
-            "messages": session.get("messages", []), "unread_technician": session.get("unread_technician", 0),
+            "messages": session.get("messages", []), "chat_open": _tracking_chat_open(session),
+            "unread_technician": session.get("unread_technician", 0),
             "expires_at": session.get("expires_at")}
 
 
@@ -1359,6 +1362,8 @@ async def technician_start_order_tracking(order_id: int, request: Request, conte
             raise SGPError("Inicie a OS como Em execução antes de ativar o acompanhamento.", 409)
     await call_context(context, lambda client, session: validate_running())
     session = await _tracking_for_technician(order_id, context)
+    if session.get("os_status") != 2:
+        raise HTTPException(409, "Coloque a OS em execução para compartilhar a localização.")
     if session.get("state") in ("arrived", "finished", "cancelled", "paused"):
         raise HTTPException(409, "O acompanhamento desta visita foi encerrado.")
     try:
@@ -1370,9 +1375,10 @@ async def technician_start_order_tracking(order_id: int, request: Request, conte
     session["state"] = "traveling"
     session["last_location"] = {"latitude": lat, "longitude": lon, "accuracy": accuracy, "updated_at": time.time()}
     token = str(session.pop("ready_token", ""))
-    if not token:
+    if token:
+        session["tracking_url"] = _public_app_base_url(request) + f"/acompanhar/{token}"
+    elif not session.get("tracking_url"):
         raise HTTPException(409, "O link desta visita já foi criado e não pode ser regenerado.")
-    session["tracking_url"] = _public_app_base_url(request) + f"/acompanhar/{token}"
     session.pop("token", None)
     await run_sync(lambda: operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
     return {"state": "traveling", "tracking_url": session["tracking_url"] if session.get("titular_cpf_hash") else None,
@@ -1383,7 +1389,8 @@ async def technician_start_order_tracking(order_id: int, request: Request, conte
 async def technician_order_location(order_id: int, request: Request, context=Depends(session_context)):
     require_technician(context[1])
     session = await _tracking_for_technician(order_id, context)
-    if session.get("state") != "traveling": raise HTTPException(409, "O deslocamento não está ativo.")
+    if session.get("state") != "traveling" or session.get("os_status") != 2:
+        raise HTTPException(409, "A localização só fica disponível com a OS em execução.")
     if session.get("technician") and not _same_person(session.get("technician"), _technician_identity(context[1])):
         raise HTTPException(403, "Esta sessão não pertence ao técnico logado.")
     body = await request.json()
@@ -1428,14 +1435,16 @@ async def public_order_tracking(token: str, request: Request):
     if session.get("state") in ("cancelled", "finished", "paused"):
         raise HTTPException(410, "Este acompanhamento foi encerrado.")
     loc = session.get("last_location")
-    fresh = session.get("state") == "traveling" and loc and time.time() - float(loc.get("updated_at") or 0) <= 90
+    chat_open = _tracking_chat_open(session)
+    fresh = chat_open and session.get("state") == "traveling" and loc and time.time() - float(loc.get("updated_at") or 0) <= 90
     return {"client": session.get("client"), "technician": str(session.get("technician") or "Técnico").split()[0],
-            "destination": session.get("destination"), "location": loc if fresh else None,
-            "status": "arrived" if session.get("state") == "arrived" else "on_the_way" if fresh else "waiting_location" if session.get("state") == "ready" else "location_unavailable",
-            "updated_at": loc.get("updated_at") if loc else None,
+            "order_id": session.get("order_id"), "destination": session.get("destination") if fresh else None,
+            "location": loc if fresh else None,
+            "status": "arrived" if session.get("state") == "arrived" else "on_the_way" if fresh else "location_unavailable" if chat_open else "waiting_location",
+            "updated_at": loc.get("updated_at") if fresh else None,
             "arrived_at": session.get("arrived_at"),
             "messages": [{key: item.get(key) for key in ("side", "author", "text", "created_at")}
-                         for item in session.get("messages", [])], "chat_open": session.get("state") == "traveling",
+                         for item in session.get("messages", [])], "chat_open": chat_open,
             "unread_client": session.get("unread_client", 0)}
 
 
@@ -1494,9 +1503,13 @@ def _tracking_request_ip(request: Request) -> str | None:
         return None
 
 
+def _tracking_chat_open(session: dict[str, Any]) -> bool:
+    return session.get("os_status") == 2 and session.get("state") in ("ready", "traveling") and not session.get("chat_closed")
+
+
 async def _post_tracking_message(session: dict[str, Any], author: str, text_value: str, side: str, ip: str | None = None):
-    if session.get("state") != "traveling" or session.get("chat_closed"):
-        raise HTTPException(409, "O chat foi encerrado quando o técnico chegou ao endereço.")
+    if not _tracking_chat_open(session):
+        raise HTTPException(409, "As mensagens só ficam disponíveis com a OS em execução, até a chegada do técnico.")
     text_value = str(text_value or "").strip()
     if not text_value or len(text_value) > 1000: raise HTTPException(400, "A mensagem deve ter de 1 a 1000 caracteres.")
     messages = session.setdefault("messages", [])
@@ -4322,8 +4335,19 @@ async def _tracking_for_technician(order_id: int, context) -> dict[str, Any]:
         await _end_order_tracking(order_id, ended_state)
         session["state"] = ended_state
         session["last_location"] = None
-    session["os_status"] = current_status
+    await _sync_tracking_order_status(session, current_status)
     return session
+
+
+async def _sync_tracking_order_status(session: dict[str, Any], status: int) -> None:
+    if session.get("os_status") == status:
+        return
+    session["os_status"] = status
+    if status != 2:
+        session["last_location"] = None
+        if session.get("state") == "traveling":
+            session["state"] = "ready"
+    await run_sync(lambda: operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
 
 
 async def _prepare_order_tracking(
@@ -4363,15 +4387,11 @@ async def _prepare_order_tracking(
                 titular_cpf_hash = ""
     if require_titular_cpf and not titular_cpf_hash:
         raise HTTPException(422, "O SGP não forneceu um CPF válido do titular desta OS. Confira o cadastro antes de gerar o link.")
-    if existing and existing.get("state") in ("traveling", "arrived"):
+    if existing and existing.get("state") in ("ready", "traveling", "arrived"):
         if titular_cpf_hash and not existing.get("titular_cpf_hash"):
             existing["titular_cpf_hash"] = titular_cpf_hash
             await run_sync(lambda: operations.save_tracking_session(existing["token_hash"], existing, 12 * 3600))
-        return existing
-    if existing and existing.get("state") == "ready" and existing.get("ready_token"):
-        if titular_cpf_hash and not existing.get("titular_cpf_hash"):
-            existing["titular_cpf_hash"] = titular_cpf_hash
-            await run_sync(lambda: operations.save_tracking_session(existing["token_hash"], existing, 12 * 3600))
+        await _sync_tracking_order_status(existing, order_status)
         return existing
     destination = _coordinates(order.get("endereco_ll") or order.get("contrato_endereco_ll"))
     if not destination:

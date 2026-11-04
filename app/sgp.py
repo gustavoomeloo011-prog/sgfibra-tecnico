@@ -4003,7 +4003,7 @@ class SGPClient:
         for item in contracts:
             if not item.get("network_found") or item.get("slot") is None or item.get("pon") is None:
                 continue
-            key = (str(item.get("olt_id") or ""), str(item.get("slot") or ""), str(item.get("pon") or ""))
+            key = (str(item.get("olt_id") or ""), str(item["slot"]), str(item["pon"]))
             groups[key] = groups.get(key, 0) + 1
         reference = max(groups, key=groups.get) if groups else None
         for item in contracts:
@@ -4017,7 +4017,7 @@ class SGPClient:
             if not item.get("network_found"):
                 item.update({"belongs": None, "reason": "Contrato localizado, mas o SGP não devolveu ONU, OLT, slot e PON para comparação."})
                 continue
-            key = (str(item.get("olt_id") or ""), str(item.get("slot") or ""), str(item.get("pon") or ""))
+            key = (str(item.get("olt_id") or ""), str(item.get("slot")), str(item.get("pon")))
             same_historical_branch = bool(
                 item.get("network_source") == "history" and reference
                 and str(item.get("slot")) == reference[1]
@@ -4509,15 +4509,22 @@ class SGPClient:
             "source": status.get("source"),
         }
 
-    def pon_attenuation(self, contract_id: int) -> dict[str, Any]:
+    def pon_attenuation(self, contract_id: int, *, order: dict[str, Any] | None = None) -> dict[str, Any]:
         """Diagnose the target ONU against its whole PON and local street/CTO."""
-        verification = self.verify_cto_contracts([int(contract_id)])
-        contract = (verification.get("contracts") or [{}])[0]
-        reference = verification.get("reference")
-        if not contract.get("found"):
-            raise SGPError("Contrato não localizado no SGP.", 404)
-        if not reference:
-            raise SGPError("O contrato não possui OLT, slot e PON para análise.", 422)
+        order = order or {}
+        ports = [order.get(key) for key in ("servico_onu_olt_id", "servico_onu_slot", "servico_onu_pon")]
+        if all(value is not None and str(value).isdigit() for value in ports) and int(ports[0]) > 0:
+            reference = dict(zip(("olt_id", "slot", "pon"), ports))
+            contract = {"contract_id": contract_id, "client": order.get("cliente"),
+                        "serial": order.get("servico_onu_serial"), "address": order.get("endereco_logradouro")}
+        else:
+            verification = self.verify_cto_contracts([int(contract_id)])
+            contract = (verification.get("contracts") or [{}])[0]
+            reference = verification.get("reference")
+            if not contract.get("found"):
+                raise SGPError("Contrato não localizado no SGP.", 404)
+            if not reference or not all(str(reference.get(k)).isdigit() for k in ("olt_id", "slot", "pon")):
+                raise SGPError("O contrato não possui OLT, slot e PON para análise.", 422)
         status = self.optical_signals(
             int(reference["olt_id"]), int(reference["slot"]), int(reference["pon"]), admin_report=True,
         )

@@ -341,7 +341,7 @@ function setPage(title) {
   document.querySelectorAll("[data-route]").forEach(link => {
     link.classList.toggle("active", link.dataset.route === location.hash.slice(1));
   });
-  document.body.classList.remove("menu-open");
+  setMenuOpen(false);
 }
 
 function returnObligationFormHtml(home = false) {
@@ -1911,7 +1911,7 @@ async function loadOrderPonAnalysis(orderId, force = false) {
   button.disabled = true; button.textContent = "Analisando...";
   target.innerHTML = '<div class="empty">Consultando OLT, slot, PON e sinais no SGP...</div>';
   try {
-    const result = await api(`/api/technician/orders/${orderId}/pon-analysis${force ? "?refresh=1" : ""}`, { timeoutMs: 120000 });
+    const result = await api(`/api/technician/orders/${orderId}/pon-analysis${force ? "?refresh=1" : ""}`, { timeoutMs: 120000, concurrent: true });
     target.innerHTML = renderOrderPonAnalysis(result);
     button.textContent = "Atualizar análise"; button.onclick = () => loadOrderPonAnalysis(orderId, true);
   } catch (error) { target.innerHTML = `<div class="empty error">${esc(error.message)}</div>`; button.textContent = "Tentar novamente"; }
@@ -2011,29 +2011,29 @@ function stopOrderTrackingGps(){if(orderTrackingWatch!=null)navigator.geolocatio
 async function initializeOrderTracking(orderId){
   if(orderTrackingTimer)clearInterval(orderTrackingTimer);stopOrderTrackingGps();orderTrackingToken=null;
   const stateNode=$("#order-tracking-state"), locationNode=$("#order-tracking-location");let autoAttempted=false;
-  const refresh=async()=>{try{const data=await api(`/api/technician/orders/${orderId}/tracking`);orderTrackingToken=data.token||null;
+  const refresh=async()=>{try{const data=await api(`/api/technician/orders/${orderId}/tracking`, {concurrent:true});orderTrackingToken=data.token||null;
     const copyButton=$("#copy-order-tracking");setTrackingShareUrl(data.tracking_url||"");
-    stateNode.textContent=data.state==='ready'&&Number(data.os_status)!==2?'Link disponível. O GPS começa quando a OS entrar em execução.':({ready:'OS em execução. Solicitando permissão para iniciar o GPS.',traveling:'Deslocamento ativo · GPS e chat disponíveis.',arrived:'Técnico chegou ao endereço · GPS e chat encerrados.',finished:'Atendimento finalizado.',paused:'Acompanhamento pausado.'})[data.state]||'Aguardando deslocamento.';
+    stateNode.textContent=data.state==='ready'&&Number(data.os_status)!==2?'Link disponível. O chat e a localização serão liberados quando a OS estiver em execução.':({ready:'OS em execução. Solicitando permissão para iniciar o GPS.',traveling:'Deslocamento ativo · GPS e chat disponíveis.',arrived:'Técnico chegou ao endereço · GPS e chat encerrados.',finished:'Atendimento finalizado.',paused:'Acompanhamento pausado.'})[data.state]||'Aguardando deslocamento.';
     locationNode.textContent=data.last_location?.updated_at?`Última localização enviada ${new Date(data.last_location.updated_at*1000).toLocaleTimeString('pt-BR')}`:'Localização ainda não compartilhada.';
     $("#start-order-tracking").hidden=data.state!=='ready'||Number(data.os_status)!==2||!autoAttempted;$("#copy-order-tracking").disabled=!data.tracking_url;$("#arrive-order-tracking").hidden=data.state!=='traveling';
-    const chatOpen=data.state==='traveling';$("#order-tracking-chat-form").hidden=!chatOpen;document.querySelectorAll('[data-tracking-reply]').forEach(button=>button.hidden=!chatOpen);
+    const chatOpen=data.chat_open===true;$("#order-tracking-chat-form").hidden=!chatOpen;document.querySelectorAll('[data-tracking-reply]').forEach(button=>button.hidden=!chatOpen);
     renderOrderTrackingMessages(data.messages||[]);if(data.state!=='traveling')stopOrderTrackingGps();
     if(data.state==='ready'&&Number(data.os_status)===2&&!autoAttempted){autoAttempted=true;requestOrderTrackingGps(orderId,stateNode);}
   }catch(error){stateNode.textContent=error.message;}};
   await refresh();orderTrackingTimer=setInterval(refresh,5000);
   $("#start-order-tracking").onclick=()=>requestOrderTrackingGps(orderId,stateNode);
   $("#copy-order-tracking").onclick=copyCustomerTrackingLink;
-  $("#arrive-order-tracking").onclick=async()=>{if(!confirm('Confirma que chegou ao endereço? Isso encerra GPS e chat desta visita.'))return;try{await api(`/api/technician/orders/${orderId}/tracking/arrived`,{method:'POST',body:'{}'});stopOrderTrackingGps();await refresh();}catch(e){notify(e.message);}};
-  $("#order-tracking-chat-form").onsubmit=async e=>{e.preventDefault();const input=$("#order-tracking-chat-input");try{await api(`/api/technician/orders/${orderId}/tracking/messages`,{method:'POST',body:JSON.stringify({text:input.value})});input.value='';await refresh();}catch(err){notify(err.message);}};
-  document.querySelectorAll('[data-tracking-reply]').forEach(b=>b.onclick=async()=>{try{await api(`/api/technician/orders/${orderId}/tracking/messages`,{method:'POST',body:JSON.stringify({text:b.dataset.trackingReply})});await refresh();}catch(e){notify(e.message);}});
+  $("#arrive-order-tracking").onclick=async()=>{if(!confirm('Confirma que chegou ao endereço? Isso encerra GPS e chat desta visita.'))return;try{await api(`/api/technician/orders/${orderId}/tracking/arrived`,{method:'POST',concurrent:true,body:'{}'});stopOrderTrackingGps();await refresh();}catch(e){notify(e.message);}};
+  $("#order-tracking-chat-form").onsubmit=async e=>{e.preventDefault();const input=$("#order-tracking-chat-input");try{await api(`/api/technician/orders/${orderId}/tracking/messages`,{method:'POST',concurrent:true,body:JSON.stringify({text:input.value})});input.value='';await refresh();}catch(err){notify(err.message);}};
+  document.querySelectorAll('[data-tracking-reply]').forEach(b=>b.onclick=async()=>{try{await api(`/api/technician/orders/${orderId}/tracking/messages`,{method:'POST',concurrent:true,body:JSON.stringify({text:b.dataset.trackingReply})});await refresh();}catch(e){notify(e.message);}});
 }
 function requestOrderTrackingGps(orderId,stateNode){
   if(!navigator.geolocation){stateNode.textContent='Este aparelho não disponibiliza GPS pelo navegador. O acompanhamento não foi iniciado.';$("#start-order-tracking").hidden=false;return;}
   $("#start-order-tracking").hidden=true;
   stateNode.textContent='Aguardando autorização e posição inicial do GPS…';
-  navigator.geolocation.getCurrentPosition(async pos=>{try{const started=await api(`/api/technician/orders/${orderId}/tracking/start`,{method:'POST',body:JSON.stringify({latitude:pos.coords.latitude,longitude:pos.coords.longitude,accuracy:pos.coords.accuracy,token:orderTrackingToken})});setTrackingShareUrl(started.tracking_url||"");$("#start-order-tracking").hidden=true;$("#arrive-order-tracking").hidden=false;$("#order-tracking-chat-form").hidden=false;document.querySelectorAll('[data-tracking-reply]').forEach(button=>button.hidden=false);stateNode.textContent='Deslocamento ativo · GPS e chat disponíveis.';$("#order-tracking-location").textContent='Localização inicial enviada. Atualização automática ativa.';startOrderTrackingWatch(orderId);notify(started.tracking_url?'Acompanhamento iniciado. Link pronto para compartilhar.':'GPS iniciado. O supervisor precisa gerar o link depois de confirmar o CPF do titular.');}catch(e){stateNode.textContent=e.message;$("#start-order-tracking").hidden=false;}},err=>{stateNode.textContent=err.code===1?'A permissão de localização foi negada. Libere o GPS e tente novamente. O acompanhamento não está ativo.':'GPS indisponível. Tente novamente em local aberto. O acompanhamento não está ativo.';$("#start-order-tracking").hidden=false;},{enableHighAccuracy:true,timeout:15000,maximumAge:0});
+  navigator.geolocation.getCurrentPosition(async pos=>{try{const started=await api(`/api/technician/orders/${orderId}/tracking/start`,{method:'POST',concurrent:true,body:JSON.stringify({latitude:pos.coords.latitude,longitude:pos.coords.longitude,accuracy:pos.coords.accuracy,token:orderTrackingToken})});setTrackingShareUrl(started.tracking_url||"");$("#start-order-tracking").hidden=true;$("#arrive-order-tracking").hidden=false;$("#order-tracking-chat-form").hidden=false;document.querySelectorAll('[data-tracking-reply]').forEach(button=>button.hidden=false);stateNode.textContent='Deslocamento ativo · GPS e chat disponíveis.';$("#order-tracking-location").textContent='Localização inicial enviada. Atualização automática ativa.';startOrderTrackingWatch(orderId);notify(started.tracking_url?'Acompanhamento iniciado. Link pronto para compartilhar.':'GPS iniciado. O supervisor precisa gerar o link depois de confirmar o CPF do titular.');}catch(e){stateNode.textContent=e.message;$("#start-order-tracking").hidden=false;}},err=>{stateNode.textContent=err.code===1?'A permissão de localização foi negada. Libere o GPS e tente novamente. O acompanhamento não está ativo.':'GPS indisponível. Tente novamente em local aberto. O acompanhamento não está ativo.';$("#start-order-tracking").hidden=false;},{enableHighAccuracy:true,timeout:15000,maximumAge:0});
 }
-function startOrderTrackingWatch(orderId){stopOrderTrackingGps();orderTrackingWatch=navigator.geolocation.watchPosition(pos=>api(`/api/technician/orders/${orderId}/tracking/location`,{method:'POST',body:JSON.stringify({latitude:pos.coords.latitude,longitude:pos.coords.longitude,accuracy:pos.coords.accuracy})}).catch(()=>{}),()=>{}, {enableHighAccuracy:true,maximumAge:15000,timeout:25000});}
+function startOrderTrackingWatch(orderId){stopOrderTrackingGps();orderTrackingWatch=navigator.geolocation.watchPosition(pos=>api(`/api/technician/orders/${orderId}/tracking/location`,{method:'POST',concurrent:true,body:JSON.stringify({latitude:pos.coords.latitude,longitude:pos.coords.longitude,accuracy:pos.coords.accuracy})}).catch(()=>{}),()=>{}, {enableHighAccuracy:true,maximumAge:15000,timeout:25000});}
 function renderOrderTrackingMessages(messages){const box=$("#order-tracking-messages");if(!box)return;box.innerHTML=messages.map(m=>`<p><b>${esc(m.side==='technician'?'Técnico':'Cliente')}</b> · ${new Date(m.created_at*1000).toLocaleTimeString('pt-BR')}<br>${esc(m.text)}</p>`).join('')||'<p class="muted">Nenhuma mensagem ainda.</p>';box.scrollTop=box.scrollHeight;}
 
 function saveTechnicianOrderStatus(orderId) {
@@ -4328,7 +4328,18 @@ $("#logout").onclick = async () => {
   clearInterval(shiftScheduleTimer);
   try { await api("/api/logout", { method: "POST" }); } finally { location.reload(); }
 };
-$("#menu").onclick = () => document.body.classList.toggle("menu-open");
+function setMenuOpen(open) {
+  document.body.classList.toggle("menu-open", open);
+  $("#menu").setAttribute("aria-expanded", String(open));
+}
+$("#menu").onclick = () => setMenuOpen(!document.body.classList.contains("menu-open"));
+$("#menu-scrim").onclick = () => { setMenuOpen(false); $("#menu").focus(); };
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && document.body.classList.contains("menu-open")) {
+    setMenuOpen(false);
+    $("#menu").focus();
+  }
+});
 window.addEventListener("hashchange", route);
 
 (async function initialize() {

@@ -13,7 +13,7 @@
   <link rel="icon" href="/favicon-sgfibra.svg" type="image/svg+xml">
   <link rel="manifest" href="/manifest.webmanifest?v=20261103-1">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="/essential.css?v=20261103-design-system">
+  <link rel="stylesheet" href="/essential.css?v=20261104-visita">
   <link rel="stylesheet" href="/map-logistics.css?v=20260930-pon-health-filter-v4">
   <link rel="stylesheet" href="/tutorials.css?v=1">
   <link rel="stylesheet" href="/voip.css?v=20261015-v2">
@@ -40,7 +40,8 @@
   </main>
 
   <div id="application" class="app hidden">
-    <aside>
+    <button id="menu-scrim" aria-label="Fechar menu"></button>
+    <aside id="app-navigation">
       <nav>
         <a href="#home" data-route="home"><span>⌂</span> Início</a>
         <a href="#rota" data-route="rota" data-access="superadmin office"><span>◷</span> Rota</a>
@@ -60,7 +61,7 @@
     </aside>
     <section class="workspace">
       <header>
-        <button id="menu" aria-label="Abrir menu">☰</button>
+        <button id="menu" aria-label="Abrir menu" aria-controls="app-navigation" aria-expanded="false">☰</button>
         <div><small>SG FIBRA TÉCNICO</small><h2 id="page-title">Início</h2></div>
         <div class="user"><span id="avatar"></span><div><strong id="user-name"></strong><small id="user-mode"></small></div></div>
       </header>
@@ -69,7 +70,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
-  <script src="/essential.js?v=20261103-design-system" defer></script>
+  <script src="/essential.js?v=20261104-visita" defer></script>
   <script src="/voip.js?v=20261023-office-readonly" defer></script>
   <script src="/certification.js?v=20261015-v3" defer></script>
   <script src="/maintenance.js?v=20261002-v1" defer></script>

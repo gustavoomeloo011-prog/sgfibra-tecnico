@@ -4,58 +4,34 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <title>Acompanhe seu técnico · SG Fibra</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <style>
-    *{box-sizing:border-box}body{margin:0;background:#f3f6fa;color:#11243b;font:15px system-ui,-apple-system,sans-serif}
-    .head{padding:22px max(18px,calc((100% - 920px)/2));background:linear-gradient(125deg,#081725,#0b78c2);color:#fff}
-    .head small{font-weight:800;letter-spacing:.13em;color:#89d8ff}.head h1{margin:7px 0 4px;font-size:clamp(22px,5vw,30px)}.head p{margin:0;color:#d7efff}
-    main{max-width:920px;margin:16px auto;padding:0 14px}.status,.chat{padding:17px;border-radius:14px;background:#fff;box-shadow:0 8px 28px #16324d15;margin-bottom:14px}
-    .status b,.status span{display:block}.status b{font-size:18px}.status span{margin-top:5px;color:#60748a}#map{height:min(58vh,560px);min-height:330px;border-radius:16px;overflow:hidden;margin-bottom:14px;background:#e5ebf2}
-    .tech{background:#0879c9;border:3px solid white;border-radius:50%;width:24px;height:24px;box-shadow:0 2px 9px #0005}.home{background:#f1a827;border:3px solid white;border-radius:4px;width:22px;height:22px;box-shadow:0 2px 9px #0005}
-    .chat h2{margin:0 0 12px;font-size:19px}.log{display:flex;flex-direction:column;gap:8px;max-height:280px;overflow:auto;margin-bottom:12px}.message{max-width:85%;padding:9px 12px;border-radius:12px;background:#eef3f8;overflow-wrap:anywhere}.message.client{align-self:flex-end;background:#d9efff}.message small{display:block;color:#61768c;font-size:11px;margin-bottom:3px}
-    form{display:flex;gap:8px}input{min-width:0;flex:1;padding:12px;border:1px solid #cbd7e4;border-radius:9px;font:inherit}button{padding:11px 17px;border:0;border-radius:9px;background:#0879c9;color:white;font:inherit;font-weight:700;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed}.privacy{padding:0 4px 18px;color:#697a8d;font-size:12px}
-    @media(max-width:600px){main{margin:12px auto;padding:0 10px}.head{padding:19px 16px}.status,.chat{padding:14px}#map{height:48vh;min-height:300px}form{align-items:stretch}button{padding:10px 12px}}
-  </style>
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#092446">
+  <title>Acompanhamento da visita | SG Fibra</title>
+  <link rel="stylesheet" href="/assets/tracking.css">
+  <script defer src="/assets/tracking.js"></script>
 </head>
 <body>
-  <header class="head"><small>SG FIBRA · ACOMPANHAMENTO DA INSTALAÇÃO</small><h1 id="title">Acompanhamento da visita</h1><p id="subtitle">A localização é compartilhada somente durante o deslocamento.</p></header>
-  <main>
-    <section class="status" id="identity-gate" hidden><b>Confirme que você é o titular</b><span>Digite o CPF cadastrado no SGP para ver o acompanhamento e enviar mensagens. A confirmação fica salva neste aparelho para este link.</span><form id="identity-form"><input id="identity-cpf" inputmode="numeric" autocomplete="off" maxlength="14" placeholder="CPF do titular" aria-label="CPF do titular" required><button id="identity-submit" type="submit">Confirmar CPF</button></form><span id="identity-error" role="alert"></span></section>
+  <header class="mast"><div class="wrap"><span class="brand">SG <strong>FIBRA</strong></span><span class="portal">Portal do cliente</span></div></header>
+  <main class="wrap">
+    <div class="intro"><p class="eyebrow">ATENDIMENTO TÉCNICO</p><h1 id="title">Acompanhamento da visita</h1><p id="subtitle">Mensagens e localização ficam disponíveis quando o técnico coloca o serviço <strong>em execução</strong>.</p></div>
+    <p id="page-notice" class="notice" role="status">Consultando sua visita…</p>
+    <section class="card" id="identity-gate" hidden>
+      <p class="eyebrow">ACESSO DO TITULAR</p><h2>Confirme seu CPF</h2><p>Use o CPF do titular do contrato. A confirmação vale neste navegador enquanto o link estiver ativo.</p>
+      <form id="identity-form"><label for="identity-cpf">CPF do titular</label><div class="controls"><input id="identity-cpf" inputmode="numeric" autocomplete="off" maxlength="14" placeholder="000.000.000-00" required><button id="identity-submit">Confirmar CPF</button></div><span id="identity-error" role="alert"></span></form>
+    </section>
     <div id="tracking-content" hidden>
-      <section class="status"><b id="status" aria-live="polite">Carregando acompanhamento…</b><span id="updated"></span></section>
-      <div id="map" aria-label="Mapa da visita"></div>
-      <section class="chat"><h2>Chat com o técnico</h2><div class="log" id="chat-log" aria-live="polite"></div><form id="chat-form"><input id="chat-input" maxlength="1000" placeholder="Escreva sua mensagem" autocomplete="off" required><button id="send" type="submit">Enviar</button></form></section>
-      <p class="privacy">Este link é temporário e mostra somente o técnico responsável por esta instalação. O mapa remove posições sem atualização recente. A precisão depende do aparelho.</p>
+      <section class="card"><header class="row"><p class="eyebrow">SUA VISITA</p><span id="order-number" class="pill"></span></header>
+        <ol id="steps" aria-label="Etapas da visita"><li>Agendada</li><li>Em execução</li><li>Chegada</li></ol>
+        <h2 id="status" aria-live="polite"></h2><p id="updated"></p>
+      </section>
+      <section class="card" id="map-card" hidden><p class="eyebrow">DESLOCAMENTO</p><h2>Localização do técnico</h2><div id="map" aria-label="Mapa da visita"></div><p id="map-note"></p></section>
+      <section class="card"><p class="eyebrow">CONTATO</p><h2>Conversa com o técnico</h2><p id="chat-note"></p>
+        <div class="log" id="chat-log" aria-live="polite"></div>
+        <form id="chat-form" hidden><label for="chat-input">Sua mensagem</label><div class="controls"><input id="chat-input" maxlength="1000" placeholder="Escreva sua mensagem" autocomplete="off" required disabled><button id="send" disabled>Enviar</button></div></form>
+        <p id="chat-error" role="alert"></p>
+      </section>
     </div>
+    <footer>SG Fibra · Link pessoal e temporário para esta visita.</footer>
   </main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    const token=location.pathname.split('/').filter(Boolean).pop();
-    let map,techMarker,homeMarker,first=true,lastMessages='';
-    const $=selector=>document.querySelector(selector);
-    const deviceStorageKey='sgfibra-tracking-device-v1';
-    let deviceId=localStorage.getItem(deviceStorageKey)||'';
-    if(!/^[A-Za-z0-9_-]{32,80}$/.test(deviceId)){deviceId=crypto.getRandomValues(new Uint8Array(24)).reduce((value,byte)=>value+byte.toString(16).padStart(2,'0'),'');localStorage.setItem(deviceStorageKey,deviceId);}
-    const deviceHeaders={'X-Tracking-Device':deviceId};
-    function age(value){const seconds=Math.max(0,Math.round(Date.now()/1000-Number(value)));return seconds<60?'agora':`há ${Math.floor(seconds/60)} min`;}
-    function renderMessages(messages){const signature=JSON.stringify(messages||[]);if(signature===lastMessages)return;lastMessages=signature;const box=$('#chat-log');box.replaceChildren();for(const message of messages||[]){const row=document.createElement('div');row.className=`message ${message.side==='client'?'client':''}`;const meta=document.createElement('small');meta.textContent=`${message.side==='client'?'Você':message.author||'Técnico'} · ${new Date(Number(message.created_at)*1000).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}`;const body=document.createElement('span');body.textContent=message.text;row.append(meta,body);box.append(row);}if(!messages?.length){const empty=document.createElement('small');empty.textContent='Ainda não há mensagens.';box.append(empty);}box.scrollTop=box.scrollHeight;}
-    async function refresh(){try{const response=await fetch(`/api/public/tracking/${encodeURIComponent(token)}`,{cache:'no-store',headers:deviceHeaders}),data=await response.json();if(!response.ok)throw new Error(data.error||data.detail||'Acompanhamento indisponível.');
-      if(data.identity_required){$('#identity-gate').hidden=false;$('#tracking-content').hidden=true;$('#title').textContent='Confirme seus dados para acompanhar a visita';return;}
-      $('#identity-gate').hidden=true;$('#tracking-content').hidden=false;
-      $('#title').textContent=data.status==='arrived'?'Seu técnico chegou ao endereço':`Olá, ${data.client}. Acompanhe sua visita`;
-      const destination=data.destination;if(!map){map=L.map('map',{zoomControl:true}).setView([destination.latitude,destination.longitude],15);L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);homeMarker=L.marker([destination.latitude,destination.longitude],{icon:L.divIcon({className:'',html:'<div class="home"></div>',iconSize:[22,22],iconAnchor:[11,11]})}).addTo(map).bindTooltip('Endereço da visita');}
-      if(data.location){const point=[data.location.latitude,data.location.longitude];if(!techMarker)techMarker=L.marker(point,{icon:L.divIcon({className:'',html:'<div class="tech"></div>',iconSize:[24,24],iconAnchor:[12,12]})}).addTo(map);else techMarker.setLatLng(point);if(first){map.fitBounds(L.latLngBounds([point,[destination.latitude,destination.longitude]]).pad(.25),{maxZoom:16});first=false;}}
-      else if(techMarker){map.removeLayer(techMarker);techMarker=null;}
-      const state=$('#status'),updated=$('#updated');
-      if(data.status==='arrived'){state.textContent='Seu técnico chegou ao endereço. O atendimento será iniciado.';updated.textContent=data.arrived_at?`Chegada confirmada às ${new Date(Number(data.arrived_at)*1000).toLocaleTimeString('pt-BR')}`:'Deslocamento encerrado.';}
-      else if(data.location){state.textContent=`${data.technician} está a caminho`;updated.textContent=`Localização atualizada ${age(data.location.updated_at)} · precisão aproximada de ${Math.round(data.location.accuracy||0)} m`;}
-      else{state.textContent=data.status==='waiting_location'?'Aguardando o início do deslocamento':'Localização temporariamente indisponível';updated.textContent=data.status==='waiting_location'?'O técnico iniciará o GPS ao começar o deslocamento. A página atualizará automaticamente.':'A posição anterior foi removida do mapa. A página atualizará automaticamente.';}
-      const open=data.chat_open===true;$('#chat-form').hidden=!open;$('#chat-input').disabled=!open;$('#send').disabled=!open;$('#chat-form').querySelector('input').placeholder=open?'Escreva sua mensagem':'Chat encerrado para esta visita';renderMessages(data.messages||[]);
-    }catch(error){$('#identity-gate').hidden=false;$('#tracking-content').hidden=true;$('#identity-error').textContent=error.message;$('#chat-form').hidden=true;}}
-    $('#identity-form').addEventListener('submit',async event=>{event.preventDefault();const button=$('#identity-submit'),message=$('#identity-error');button.disabled=true;message.textContent='Validando no cadastro do SGP…';try{const response=await fetch(`/api/public/tracking/${encodeURIComponent(token)}/verify`,{method:'POST',headers:{'Content-Type':'application/json',...deviceHeaders},body:JSON.stringify({cpf:$('#identity-cpf').value})});const result=await response.json();if(!response.ok)throw new Error(result.error||result.detail||'Não foi possível confirmar o titular.');$('#identity-cpf').value='';message.textContent='';await refresh();}catch(error){message.textContent=error.message;}finally{button.disabled=false;}});
-    $('#chat-form').addEventListener('submit',async event=>{event.preventDefault();const input=$('#chat-input'),text=input.value.trim();if(!text)return;$('#send').disabled=true;try{const response=await fetch(`/api/public/tracking/${encodeURIComponent(token)}/messages`,{method:'POST',headers:{'Content-Type':'application/json',...deviceHeaders},body:JSON.stringify({text})});const result=await response.json();if(!response.ok)throw new Error(result.error||result.detail||'Não foi possível enviar.');input.value='';await refresh();}catch(error){$('#status').textContent=error.message;}finally{$('#send').disabled=false;}});
-    refresh();setInterval(refresh,5000);
-  </script>
 </body>
 </html>

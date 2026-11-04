@@ -103,9 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_events_order_kind ON events(os_id,kind,created_at
 CREATE INDEX IF NOT EXISTS idx_assignments_technician_lower ON assignments(lower(technician));
 CREATE INDEX IF NOT EXISTS idx_completed_closed_at ON completed_orders(closed_at);
 CREATE INDEX IF NOT EXISTS idx_removals_closed_at ON confirmed_removals(closed_at);
-INSERT INTO platform_roles(username,role,granted_by,updated_at) VALUES('Gustavo','superadmin','Sistema',0) ON CONFLICT(username) DO NOTHING;
-INSERT INTO platform_roles(username,role,granted_by,updated_at) VALUES('DavidR','technician','Sistema',0) ON CONFLICT(username) DO NOTHING;
-INSERT INTO platform_roles(username,role,granted_by,updated_at) VALUES('Kaionunes','admin','Gustavo',0) ON CONFLICT(username) DO NOTHING;
+INSERT INTO platform_roles(username,role,granted_by,updated_at) VALUES('GON','superadmin','Sistema',0) ON CONFLICT(username) DO NOTHING;
 """
 
 
@@ -942,6 +940,7 @@ def _migrate_sqlite(database: Path) -> None:
         "platform_users": ("username","name","first_login","last_login","last_activity"),
         "platform_roles": ("username","role","granted_by","updated_at"),
         "popup_access_members": ("username","granted_by","updated_at"),
+        "route_monitor_members": ("username","display_name","granted_by","updated_at"),
         "repeat_refunds": ("original_order_id","repeat_order_id","technician","points","refunded_by","refunded_at","restored_order_id"),
         "equipment_references": ("gpon","mac","product_id","stock_id","purchase_id","photo_hash","created_by","created_at"),
         "onu_relink_drafts": ("serial","order_id","values_json","saved_at"),
@@ -993,25 +992,6 @@ def configure_operations(_attempt=0) -> bool:
             connection.execute("SELECT pg_advisory_xact_lock(2026092501)")
             connection.execute(SCHEMA)
             _configure_rls(connection)
-            seeded = connection.execute("SELECT 1 FROM v2_migrations WHERE name='route-monitor-members-seed'").fetchone()
-            if not seeded:
-                defaults = (
-                    "Arthur", "Anderson Crepaldi", "Anderson Neis", "Bruno", "Clayton", "DavidR",
-                    "Eduardo", "Evertton", "Kaique", "Leonardo", "Paulo", "Silvando",
-                )
-                with connection.cursor() as cursor:
-                    cursor.executemany(
-                        "INSERT INTO route_monitor_members VALUES(%s,%s,'Sistema',0) ON CONFLICT(username) DO NOTHING",
-                        [(name, name) for name in defaults],
-                    )
-                connection.execute("INSERT INTO v2_migrations VALUES('route-monitor-members-seed',%s)", (time.time(),))
-            popup_seeded = connection.execute("SELECT 1 FROM v2_migrations WHERE name='popup-supervisor-seed'").fetchone()
-            if not popup_seeded:
-                connection.execute(
-                    "INSERT INTO popup_access_members VALUES('Gustavo','Sistema',%s) ON CONFLICT(username) DO NOTHING",
-                    (time.time(),),
-                )
-                connection.execute("INSERT INTO v2_migrations VALUES('popup-supervisor-seed',%s)", (time.time(),))
         _migrate_sqlite(Path(os.getenv("EBF_DB_PATH", Path(__file__).resolve().parents[1] / "operations.db")))
         with _connection() as connection:
             connection.execute(
