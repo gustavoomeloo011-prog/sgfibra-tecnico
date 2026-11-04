@@ -30,6 +30,7 @@ from psycopg_pool import PoolTimeout
 from app_fastapi import postgres_operations
 
 postgres_operations.configure_operations()
+from app import operations
 
 from app.operations import (
     add_manual_removal_payments,
@@ -95,7 +96,7 @@ from app.server import (
     SGP_BASE_URL,
 )
 from app.sgp import (
-    Credentials, SGPClient, SGPError, _business_today, _is_modem_product, _operational_week, _same_person,
+    Credentials, SGPClient, SGPError, _business_today, _is_modem_product, _operational_week, _same_person, _normalized,
     _evaluate_material_rules, _material_rule_service_text, connector_classification, _coordinates,
     reconcile_stock_day, stock_day_with_calculated_opening,
     build_route_monitor,
@@ -513,6 +514,8 @@ app = FastAPI(title="EBF Técnico Essencial", version="3.0.0", lifespan=lifespan
 async def api_authentication_and_security_headers(request: Request, call_next):
     path = request.url.path
     public_api = path in ("/api/login", "/api/integrations/google-sheets") or (path == "/api/maintenance" and request.method == "GET")
+    # Customer links use their token and CPF/device verification, not an employee login.
+    public_api = public_api or bool(re.fullmatch(r"/api/public/tracking/[A-Za-z0-9_-]{32,80}(?:/(?:verify|messages))?", path))
     if path.startswith("/api/") and not public_api and request.method != "OPTIONS":
         session_id = request.cookies.get("ebf_session", "")
         try:
@@ -961,7 +964,7 @@ async def technician_score(request: Request, context=Depends(session_context)):
     name = str(context[1]["user"].get("nome") or context[1]["user"].get("usuario") or "")
     return await cached(
         context[1], "technician-score-v6", 1800,
-        lambda: context[2].team_productivity_report(postgres_operations.repeat_refunds(), name),
+        lambda: context[2].team_productivity_report(operations.repeat_refunds(), name),
         force=force, stale_ttl=86400,
     )
 
@@ -1137,7 +1140,7 @@ async def technician_order(order_id: int, request: Request, context=Depends(sess
     draft = None
     if mode == "technician":
         try:
-            draft = await run_sync(lambda: postgres_operations.order_text_draft(order_id, session_username(context[1])))
+            draft = await run_sync(lambda: operations.order_text_draft(order_id, session_username(context[1])))
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "OS draft lookup failed for OS %s (%s)", order_id, type(exc).__name__,
@@ -1296,7 +1299,7 @@ async def technician_order_status(order_id: int, request: Request, context=Depen
             tracking_warning = str(exc.detail)
         else:
             tracking_warning = None
-    await run_sync(lambda: postgres_operations.delete_order_text_draft(order_id, session_username(context[1])))
+    await run_sync(lambda: operations.delete_order_text_draft(order_id, session_username(context[1])))
     await invalidate_cached(context[1], "orders-today:")
     await invalidate_cached(context[1], "technician-score")
     await invalidate_cached(context[1], f"order-detail-v2:{order_id}")
@@ -1307,13 +1310,6 @@ async def technician_order_status(order_id: int, request: Request, context=Depen
 async def technician_order_tracking(order_id: int, request: Request, context=Depends(session_context)):
     require_technician(context[1])
     session = await _tracking_for_technician(order_id, context)
-    token = session.get("token")
-    if not token:
-        # Tokens are never persisted in recoverable form. Return the URL only
-        # at session creation; clients can keep using its token thereafter.
-        index = await run_sync(lambda: postgres_operations.tracking_session(f"os-index-{order_id}"))
-        token_hash = str((index or {}).get("token_hash") or "")
-        session = await run_sync(lambda: postgres_operations.tracking_session(token_hash)) or session
     tracking_url = session.get("tracking_url")
     if not tracking_url and session.get("ready_token"):
         tracking_url = _public_app_base_url(request) + f"/acompanhar/{session['ready_token']}"
@@ -1330,7 +1326,7 @@ async def technician_order_tracking(order_id: int, request: Request, context=Dep
 async def superadmin_visit_tracking(context=Depends(session_context)):
     require_superadmin_session(context[1])
     now = time.time()
-    sessions = await run_sync(postgres_operations.tracking_sessions)
+    sessions = await run_sync(operations.tracking_sessions)
     visible = []
     for session in sessions:
         if float(session.get("expires_at") or 0) <= now:
@@ -1378,7 +1374,7 @@ async def technician_start_order_tracking(order_id: int, request: Request, conte
         raise HTTPException(409, "O link desta visita já foi criado e não pode ser regenerado.")
     session["tracking_url"] = _public_app_base_url(request) + f"/acompanhar/{token}"
     session.pop("token", None)
-    await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
+    await run_sync(lambda: operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
     return {"state": "traveling", "tracking_url": session["tracking_url"] if session.get("titular_cpf_hash") else None,
             "expires_at": session["expires_at"], "identity_required": not bool(session.get("titular_cpf_hash"))}
 
@@ -1397,7 +1393,7 @@ async def technician_order_location(order_id: int, request: Request, context=Dep
         if not (-90 <= lat <= 90 and -180 <= lon <= 180): raise ValueError
     except (KeyError, TypeError, ValueError): raise HTTPException(400, "Localização inválida.")
     session["last_location"] = {"latitude": lat, "longitude": lon, "accuracy": accuracy, "updated_at": time.time()}
-    await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
+    await run_sync(lambda: operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
     return {"ok": True}
 
 
@@ -1410,7 +1406,7 @@ async def technician_order_arrived(order_id: int, context=Depends(session_contex
     session["arrived_at"] = time.time()
     session["last_location"] = None
     session["chat_closed"] = True
-    await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
+    await run_sync(lambda: operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
     return {"state": "arrived", "arrived_at": session["arrived_at"]}
 
 
@@ -1438,7 +1434,8 @@ async def public_order_tracking(token: str, request: Request):
             "status": "arrived" if session.get("state") == "arrived" else "on_the_way" if fresh else "waiting_location" if session.get("state") == "ready" else "location_unavailable",
             "updated_at": loc.get("updated_at") if loc else None,
             "arrived_at": session.get("arrived_at"),
-            "messages": session.get("messages", []), "chat_open": session.get("state") == "traveling",
+            "messages": [{key: item.get(key) for key in ("side", "author", "text", "created_at")}
+                         for item in session.get("messages", [])], "chat_open": session.get("state") == "traveling",
             "unread_client": session.get("unread_client", 0)}
 
 
@@ -1509,7 +1506,7 @@ async def _post_tracking_message(session: dict[str, Any], author: str, text_valu
     session["messages"] = messages[-300:]
     target = "unread_client" if side == "technician" else "unread_technician"
     session[target] = int(session.get(target) or 0) + 1
-    await run_sync(lambda: postgres_operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
+    await run_sync(lambda: operations.save_tracking_session(session["token_hash"], session, 12 * 3600))
     return {"ok": True}
 
 
@@ -1527,7 +1524,7 @@ async def technician_order_draft(order_id: int, request: Request, context=Depend
     body = await request.json()
     value = str(body.get("text") or "")[:4000]
     result = await run_sync(
-        lambda: postgres_operations.save_order_text_draft(order_id, session_username(context[1]), value),
+        lambda: operations.save_order_text_draft(order_id, session_username(context[1]), value),
     )
     return {"ok": True, "updated_at": result["updated_at"]}
 
@@ -4169,7 +4166,7 @@ async def _tracking_for_token(token: str) -> dict[str, Any]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,80}", token):
         raise HTTPException(404, "Acompanhamento não encontrado.")
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    session = await run_sync(lambda: postgres_operations.tracking_session(token_hash))
+    session = await run_sync(lambda: operations.tracking_session(token_hash))
     if not session or float(session.get("expires_at") or 0) <= time.time():
         raise HTTPException(410, "Este link expirou.")
     if session.get("state") == "cancelled":
@@ -4184,7 +4181,7 @@ def _tracking_secret() -> bytes:
         or os.getenv("DATABASE_URL") or os.getenv("EBF_DATABASE_URL") or ""
     ).strip()
     if not value:
-        raise HTTPException(503, "A confirmação de identidade ainda não está configurada no servidor.")
+        value = operations.tracking_identity_secret()
     return value.encode()
 
 
@@ -4216,30 +4213,27 @@ def _titular_cpf_from_sgp(client: SGPClient, order: dict[str, Any]) -> str | Non
     contract_id = order.get("contrato_id") or order.get("clientecontrato_id") or order.get("contrato")
     if not client_id and not contract_id:
         return None
-    field, identifier = ("cliente", client_id) if client_id else ("contrato", contract_id)
-    result = client.request(
-        "POST", "/api/ura/clientes/",
-        form={field: identifier, "limit": 10, "exibir_conexao": "true", "omitir_titulos": "true"},
-    )
-    customers = result.get("clientes", []) if isinstance(result, dict) else []
-    customer = None
-    if field == "cliente":
-        customer = next((item for item in customers if isinstance(item, dict) and
-                         str(item.get("id") or item.get("cliente_id") or "") == str(client_id)), None)
-    else:
+    # This SGP ignores the `cliente` filter on the URA endpoint. Query the
+    # contract first and still verify the returned customer/contract IDs.
+    queries = [("contrato", contract_id), ("cliente", client_id)]
+    for field, identifier in queries:
+        if not identifier:
+            continue
+        result = client.request("POST", "/api/ura/clientes/", form={
+            field: identifier, "limit": 10, "exibir_conexao": "true", "omitir_titulos": "true",
+        })
+        customers = result.get("clientes", []) if isinstance(result, dict) else []
         for item in customers:
             if not isinstance(item, dict):
                 continue
+            if client_id and str(item.get("id") or item.get("cliente_id") or "") != str(client_id):
+                continue
             contracts = item.get("contratos") if isinstance(item.get("contratos"), list) else []
-            if any(str(contract.get("contrato") or contract.get("id") or contract.get("clientecontrato_id") or "") == str(contract_id)
-                   for contract in contracts if isinstance(contract, dict)):
-                customer = item
-                break
-        if customer is None and len(customers) == 1 and isinstance(customers[0], dict):
-            customer = customers[0]
-    if not isinstance(customer, dict):
-        return None
-    return _valid_cpf(customer.get("cpfcnpj") or customer.get("cpf_cnpj") or customer.get("cpf"))
+            if contract_id and not any(str(contract.get("contrato") or contract.get("id") or contract.get("clientecontrato_id") or "") == str(contract_id)
+                                       for contract in contracts if isinstance(contract, dict)):
+                continue
+            return _valid_cpf(item.get("cpfcnpj") or item.get("cpf_cnpj") or item.get("cpf"))
+    return None
 
 
 def _tracking_device_id(request: Request) -> str:
@@ -4318,7 +4312,7 @@ async def _tracking_for_technician(order_id: int, context) -> dict[str, Any]:
         current_status = int(order.get("os_status", -1))
     except (TypeError, ValueError):
         current_status = -1
-    session = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
+    session = await run_sync(lambda: operations.tracking_session_for_order(order_id))
     if not session:
         return await _prepare_order_tracking(order_id, context)
     # Reconcile with SGP on every technician operation so a close/pause done
@@ -4344,11 +4338,11 @@ async def _prepare_order_tracking(
     except (TypeError, ValueError):
         order_status = -1
     assigned_technician = str((order or {}).get("os_tecnico_responsavel") or "").strip()
-    valid_status = order_status in (0, 2) if is_supervisor else order_status == 2
+    valid_status = order_status in (0, 2)
     valid_owner = bool(assigned_technician) if is_supervisor else bool(order and technician_owns_order(order, context[1]))
     if not order or not valid_status or not valid_owner:
         raise HTTPException(403, "O acompanhamento exige uma OS aberta ou em execução atribuída ao técnico.")
-    existing = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
+    existing = await run_sync(lambda: operations.tracking_session_for_order(order_id))
     titular_cpf_hash = str((existing or {}).get("titular_cpf_hash") or "")
     if not titular_cpf_hash:
         titular_cpf = manual_titular_cpf
@@ -4372,17 +4366,17 @@ async def _prepare_order_tracking(
     if existing and existing.get("state") in ("traveling", "arrived"):
         if titular_cpf_hash and not existing.get("titular_cpf_hash"):
             existing["titular_cpf_hash"] = titular_cpf_hash
-            await run_sync(lambda: postgres_operations.save_tracking_session(existing["token_hash"], existing, 12 * 3600))
+            await run_sync(lambda: operations.save_tracking_session(existing["token_hash"], existing, 12 * 3600))
         return existing
     if existing and existing.get("state") == "ready" and existing.get("ready_token"):
         if titular_cpf_hash and not existing.get("titular_cpf_hash"):
             existing["titular_cpf_hash"] = titular_cpf_hash
-            await run_sync(lambda: postgres_operations.save_tracking_session(existing["token_hash"], existing, 12 * 3600))
+            await run_sync(lambda: operations.save_tracking_session(existing["token_hash"], existing, 12 * 3600))
         return existing
     destination = _coordinates(order.get("endereco_ll") or order.get("contrato_endereco_ll"))
     if not destination:
         raise HTTPException(422, "A OS não possui coordenadas válidas para o acompanhamento.")
-    existing = await run_sync(lambda: postgres_operations.tracking_session_for_order(order_id))
+    existing = await run_sync(lambda: operations.tracking_session_for_order(order_id))
     if existing and existing.get("state") in ("traveling", "arrived", "finished"):
         raise HTTPException(409, "Esta OS já possui acompanhamento associado.")
     if existing:
@@ -4399,24 +4393,24 @@ async def _prepare_order_tracking(
              "tracking_url": None, "ready_token": token, "os_status": order_status,
              "titular_cpf_hash": titular_cpf_hash or None,
              "created_by": str((context[1].get("user") or {}).get("usuario") or "Técnico")}
-    await run_sync(lambda: postgres_operations.save_tracking_session(token_hash, value, 12 * 3600))
-    await run_sync(lambda: postgres_operations.save_tracking_session(f"os-index-{order_id}", {"token_hash": token_hash}, 12 * 3600))
+    await run_sync(lambda: operations.save_tracking_session(token_hash, value, 12 * 3600))
+    await run_sync(lambda: operations.save_tracking_session(f"os-index-{order_id}", {"token_hash": token_hash}, 12 * 3600))
     return value
 
 
 async def _end_order_tracking(order_id: int, state: str) -> None:
-    index = await run_sync(lambda: postgres_operations.tracking_session(f"os-index-{order_id}"))
+    index = await run_sync(lambda: operations.tracking_session(f"os-index-{order_id}"))
     if not index:
         return
-    session = await run_sync(lambda: postgres_operations.tracking_session(index.get("token_hash", "")))
+    session = await run_sync(lambda: operations.tracking_session(index.get("token_hash", "")))
     if not session:
         return
     session["state"] = state
     session["ended_at"] = time.time()
     session["last_location"] = None
-    await run_sync(lambda: postgres_operations.save_tracking_session(index["token_hash"], session, 12 * 3600))
+    await run_sync(lambda: operations.save_tracking_session(index["token_hash"], session, 12 * 3600))
     if state in ("paused", "finished", "cancelled"):
-        await run_sync(lambda: postgres_operations.delete_tracking_session(f"os-index-{order_id}"))
+        await run_sync(lambda: operations.delete_tracking_session(f"os-index-{order_id}"))
 
 
 @app.get("/api/technician/shift")

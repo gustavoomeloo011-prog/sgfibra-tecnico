@@ -264,6 +264,18 @@ def delete_coverage_building(building_id: int) -> None:
     _execute("DELETE FROM coverage_buildings WHERE id=%s", (int(building_id),))
 
 
+def tracking_identity_secret() -> str:
+    import secrets
+    key, now = "tracking-identity-secret-v1", time.time()
+    _execute("INSERT INTO persistent_cache VALUES(%s,%s,%s,%s,%s) ON CONFLICT(cache_key) DO NOTHING",
+             (key, encrypted_json({"secret": secrets.token_hex(32)}), now, now, now + 100 * 365 * 86400))
+    row = _one("SELECT value_json FROM persistent_cache WHERE cache_key=%s", (key,))
+    value = decrypted_json(row["value_json"])
+    if not isinstance(value, dict) or not value.get("secret"):
+        raise RuntimeError("Não foi possível ler a chave de acompanhamento.")
+    return str(value["secret"])
+
+
 def tracking_session(token_hash: str) -> dict[str, Any] | None:
     row = _one(
         "SELECT value_json,expires_at FROM persistent_cache WHERE cache_key=%s",
@@ -1039,6 +1051,8 @@ def configure_operations(_attempt=0) -> bool:
         "coverage_buildings","save_coverage_building","delete_coverage_building",
         "coverage_pon_areas","save_coverage_pon_area","delete_coverage_pon_area",
         "tracking_session","tracking_sessions","tracking_session_for_order","save_tracking_session","delete_tracking_session",
+        "tracking_identity_secret",
+        "order_text_draft","save_order_text_draft","delete_order_text_draft",
         "completed_between","save_location","assign","assignments_for","snapshot",
     ):
         setattr(operations, name, globals()[name])

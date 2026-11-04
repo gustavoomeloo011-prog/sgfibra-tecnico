@@ -3256,7 +3256,44 @@ function serviceMapDistance(service, technician) {
 
 function setTrackingShareUrl(url){const value=String(url||'').trim();const copy=$('#copy-order-tracking'),field=$('#order-tracking-share-url'),share=$('#share-order-tracking');if(copy){copy.dataset.url=value;copy.disabled=!value;}if(field){field.value=value;field.hidden=!value;}if(share)share.hidden=!value;}
 async function copyCustomerTrackingLink(){const url=$('#copy-order-tracking')?.dataset.url;if(!url)return;try{await navigator.clipboard.writeText(url);notify('Link de acompanhamento copiado.');}catch{const field=$('#order-tracking-share-url');if(field){field.value=url;field.hidden=false;field.focus();field.select();}notify('Selecione e copie o link exibido.');}}
-async function createCustomerTrackingLink(orderId,button){if(!confirm('Gerar um link temporário para este cliente acompanhar somente o técnico desta instalação?'))return;button.disabled=true;try{let result;try{result=await api(`/api/office/orders/${Number(orderId)}/tracking-link`,{method:'POST',body:'{}',concurrent:true,timeoutMs:90000});}catch(error){if(error.status!==422||!error.message.toLowerCase().includes('sgp não forneceu um cpf válido'))throw error;const cpf=window.prompt('O SGP não retornou o CPF do titular para esta OS. Confira o cadastro e digite o CPF do titular para proteger o link:');if(cpf===null)return;result=await api(`/api/office/orders/${Number(orderId)}/tracking-link`,{method:'POST',body:JSON.stringify({cpf}),concurrent:true,timeoutMs:90000});}setTrackingShareUrl(result.url);$('#order-tracking-state').textContent='Link criado. Use “Copiar link” ou “Compartilhar link” para encaminhar ao cliente.';notify('Link criado e pronto para compartilhar.');}catch(error){notify(error.message);}finally{button.disabled=false;}}
+function showCustomerTrackingLink(url) {
+  if (!$('#order-tracking-share-url')) {
+    document.querySelector('#customer-tracking-link-dialog')?.remove();
+    const dialog = document.createElement('dialog');
+    dialog.id = 'customer-tracking-link-dialog';
+    dialog.innerHTML = '<h2>Link do cliente</h2><p>O cliente confirma o CPF do titular para acompanhar esta visita.</p><input id="order-tracking-share-url" readonly aria-label="Link do cliente"><div class="tracking-actions"><button id="copy-order-tracking" class="primary">Copiar link</button><button id="share-order-tracking" class="secondary">Compartilhar link</button><button class="secondary" data-close-link>Fechar</button></div>';
+    document.body.appendChild(dialog);
+    dialog.querySelector('[data-close-link]').onclick = () => dialog.close();
+    dialog.onclose = () => dialog.remove();
+    dialog.querySelector('#copy-order-tracking').onclick = copyCustomerTrackingLink;
+    dialog.querySelector('#share-order-tracking').onclick = shareCustomerTrackingLink;
+    dialog.showModal();
+  }
+  setTrackingShareUrl(url);
+  const status = $('#order-tracking-state');
+  if (status) status.textContent = 'Link criado. Use “Copiar link” ou “Compartilhar link” para encaminhar ao cliente.';
+}
+async function createCustomerTrackingLink(orderId, button) {
+  if (!confirm('Gerar um link temporário para este cliente acompanhar somente o técnico desta visita?')) return;
+  button.disabled = true;
+  try {
+    let result;
+    try {
+      result = await api(`/api/office/orders/${Number(orderId)}/tracking-link`, {method:'POST', body:'{}', concurrent:true, timeoutMs:90000});
+    } catch (error) {
+      if (error.status !== 422 || !error.message.toLowerCase().includes('sgp não forneceu um cpf válido')) throw error;
+      const cpf = window.prompt('O SGP não retornou o CPF do titular desta OS. Confira o cadastro e digite o CPF do titular para proteger o link:');
+      if (cpf === null) return;
+      result = await api(`/api/office/orders/${Number(orderId)}/tracking-link`, {method:'POST', body:JSON.stringify({cpf}), concurrent:true, timeoutMs:90000});
+    }
+    showCustomerTrackingLink(result.url);
+    notify('Link criado e pronto para compartilhar.');
+  } catch (error) {
+    notify(error.message);
+    const status = $('#order-tracking-state');
+    if (status) status.textContent = error.message;
+  } finally { button.disabled = false; }
+}
 async function shareCustomerTrackingLink(){const url=$('#copy-order-tracking')?.dataset.url;if(!url)return;try{if(navigator.share){await navigator.share({title:'Acompanhe a visita técnica',text:'Acompanhe a chegada do técnico da SG Fibra:',url});return;}await navigator.clipboard.writeText(`Acompanhe a chegada do técnico da SG Fibra:\n${url}`);notify('Mensagem com o link copiada.');}catch(error){if(error.name==='AbortError')return;const field=$('#order-tracking-share-url');if(field){field.value=url;field.hidden=false;field.focus();field.select();}notify('Selecione e copie o link exibido.');}}
 
 function serviceMapFilters(items, points) {

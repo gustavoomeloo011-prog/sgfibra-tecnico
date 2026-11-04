@@ -7,6 +7,7 @@ import json
 import hashlib
 import re
 import threading
+import secrets
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,7 @@ def _initialize_db() -> None:
               CREATE TABLE IF NOT EXISTS cto_query_history(id INTEGER PRIMARY KEY AUTOINCREMENT, query_type TEXT NOT NULL, username TEXT NOT NULL, contracts_json TEXT NOT NULL, summary_json TEXT NOT NULL, queried_at REAL NOT NULL);
               CREATE TABLE IF NOT EXISTS query_leases(name TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at REAL NOT NULL);
               CREATE TABLE IF NOT EXISTS persistent_cache(cache_key TEXT PRIMARY KEY, value_json TEXT NOT NULL, saved_at REAL NOT NULL, accessed_at REAL NOT NULL, expires_at REAL NOT NULL);
+              CREATE TABLE IF NOT EXISTS order_text_drafts(os_id INTEGER NOT NULL, username TEXT NOT NULL, text_value TEXT NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY(os_id,username));
               CREATE TABLE IF NOT EXISTS stock_balance_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT, location_id INTEGER NOT NULL, captured_at REAL NOT NULL, items_json TEXT NOT NULL);
               CREATE INDEX IF NOT EXISTS stock_balance_snapshots_location ON stock_balance_snapshots(location_id,captured_at);
               CREATE TABLE IF NOT EXISTS route_service_times(service_day TEXT NOT NULL, os_id INTEGER NOT NULL, client_id INTEGER, started_at TEXT, checked_at REAL NOT NULL, PRIMARY KEY(service_day,os_id));
@@ -296,6 +298,19 @@ def delete_cache_snapshots_prefix(prefix: str) -> None:
         db.execute("DELETE FROM persistent_cache WHERE cache_key LIKE ?", (f"{prefix}%",))
 
 
+def tracking_identity_secret() -> str:
+    """Create once, atomically, in the same store as the protected links."""
+    key, now = "tracking-identity-secret-v1", time.time()
+    with _db() as db:
+        db.execute("INSERT OR IGNORE INTO persistent_cache VALUES(?,?,?,?,?)",
+                   (key, encrypted_json({"secret": secrets.token_hex(32)}), now, now, now + 100 * 365 * 86400))
+        row = db.execute("SELECT value_json FROM persistent_cache WHERE cache_key=?", (key,)).fetchone()
+        value = decrypted_json(row["value_json"])
+        if not isinstance(value, dict) or not value.get("secret"):
+            raise RuntimeError("Não foi possível ler a chave de acompanhamento.")
+        return str(value["secret"])
+
+
 def tracking_session(token_hash: str) -> dict[str, Any] | None:
     cache_key = f"os-tracking-v1:{token_hash}"
     with _db() as db:
@@ -318,6 +333,31 @@ def tracking_sessions() -> list[dict[str, Any]]:
         if isinstance(value, dict) and value.get("order_id"):
             result.append(value)
     return result
+
+
+def tracking_session_for_order(order_id: int) -> dict[str, Any] | None:
+    index = tracking_session(f"os-index-{int(order_id)}")
+    return tracking_session(index.get("token_hash", "")) if index else None
+
+
+def order_text_draft(os_id: int, username: str) -> dict[str, Any] | None:
+    with _db() as db:
+        row = db.execute("SELECT text_value,updated_at FROM order_text_drafts WHERE os_id=? AND username=?",
+                         (int(os_id), str(username).strip().casefold())).fetchone()
+        return dict(row) if row else None
+
+
+def save_order_text_draft(os_id: int, username: str, text_value: str) -> dict[str, Any]:
+    value, updated_at = str(text_value or "")[:4000], time.time()
+    with _db() as db:
+        db.execute("INSERT OR REPLACE INTO order_text_drafts VALUES(?,?,?,?)",
+                   (int(os_id), str(username).strip().casefold(), value, updated_at))
+    return {"text_value": value, "updated_at": updated_at}
+
+
+def delete_order_text_draft(os_id: int, username: str) -> None:
+    with _db() as db:
+        db.execute("DELETE FROM order_text_drafts WHERE os_id=? AND username=?", (int(os_id), str(username).strip().casefold()))
 
 
 def save_tracking_session(token_hash: str, value: dict[str, Any], retention_seconds: int = 14 * 86400) -> None:
